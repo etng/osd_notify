@@ -13,6 +13,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "OsdNotify"
+        ),
+        .testTarget(
+            name: "OsdNotifyTests",
+            dependencies: ["OsdNotify"]
         )
     ]
 )
