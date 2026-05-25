@@ -704,7 +704,10 @@ final class OverlayInstance: NSObject, NSWindowDelegate {
             title: title,
             message: options.message,
             level: options.level,
-            options: options
+            options: options,
+            closeAction: { [weak self] in
+                self?.dismiss(animated: true, notify: true)
+            }
         )
         panelScreenKeys[ObjectIdentifier(panel)] = screenKey(for: screen)
 
@@ -810,13 +813,21 @@ final class OverlayView: NSView {
     private let contentView: OverlayContentView
     private var effectView: NSVisualEffectView?
 
-    init(frame: NSRect, title: String, message: String, level: NoticeLevel, options: Options) {
+    init(
+        frame: NSRect,
+        title: String,
+        message: String,
+        level: NoticeLevel,
+        options: Options,
+        closeAction: @escaping () -> Void
+    ) {
         contentView = OverlayContentView(
             frame: frame,
             title: title,
             message: message,
             level: level,
-            options: options
+            options: options,
+            closeAction: closeAction
         )
         super.init(frame: frame)
         wantsLayer = true
@@ -861,6 +872,40 @@ final class OverlayView: NSView {
     }
 }
 
+struct OverlayCloseAffordance {
+    static let closeButtonSize: CGFloat = 24.0
+    static let closeButtonTrailingInset: CGFloat = 20.0
+    static let closeButtonTopInset: CGFloat = 20.0
+    static let titleHitVerticalPadding: CGFloat = 6.0
+    static let closeButtonRevealDuration: TimeInterval = 6.0
+
+    static func closeButtonRect(in bounds: NSRect) -> NSRect {
+        NSRect(
+            x: bounds.maxX - closeButtonTrailingInset - closeButtonSize,
+            y: bounds.maxY - closeButtonTopInset - closeButtonSize,
+            width: closeButtonSize,
+            height: closeButtonSize
+        )
+    }
+
+    static func titleHitRect(
+        contentRect: NSRect,
+        titleY: CGFloat,
+        titleHeight: CGFloat,
+        textX: CGFloat,
+        textWidth: CGFloat
+    ) -> NSRect {
+        let minY = max(contentRect.minY, titleY - titleHitVerticalPadding)
+        let maxY = min(contentRect.maxY, titleY + titleHeight + titleHitVerticalPadding)
+        return NSRect(
+            x: textX,
+            y: minY,
+            width: textWidth,
+            height: max(0.0, maxY - minY)
+        )
+    }
+}
+
 final class OverlayContentView: NSView {
     private static let horizontalPadding: CGFloat = 30.0
     private static let verticalPadding: CGFloat = 22.0
@@ -871,12 +916,24 @@ final class OverlayContentView: NSView {
     private let message: String
     private let level: NoticeLevel
     private let options: Options
+    private let closeAction: () -> Void
+    private var isCloseButtonVisible = false
+    private var closeButtonHideTimer: Timer?
+    private var lastTitleHitRect: NSRect = .zero
 
-    init(frame: NSRect, title: String, message: String, level: NoticeLevel, options: Options) {
+    init(
+        frame: NSRect,
+        title: String,
+        message: String,
+        level: NoticeLevel,
+        options: Options,
+        closeAction: @escaping () -> Void
+    ) {
         self.title = title
         self.message = message
         self.level = level
         self.options = options
+        self.closeAction = closeAction
         super.init(frame: frame)
         wantsLayer = true
         layer?.masksToBounds = false
@@ -892,7 +949,30 @@ final class OverlayContentView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if isCloseButtonVisible,
+           OverlayCloseAffordance.closeButtonRect(in: bounds).contains(point) {
+            closeButtonHideTimer?.invalidate()
+            closeButtonHideTimer = nil
+            closeAction()
+            return
+        }
+
+        if event.clickCount >= 2,
+           lastTitleHitRect.contains(point) {
+            revealCloseButton()
+            return
+        }
+
         window?.performDrag(with: event)
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            closeButtonHideTimer?.invalidate()
+            closeButtonHideTimer = nil
+        }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -946,6 +1026,13 @@ final class OverlayContentView: NSView {
         ).size
         let totalTextHeight = ceil(titleSize.height) + Self.titleMessageGap + ceil(messageSize.height)
         var y = rect.midY + totalTextHeight / 2.0 - ceil(titleSize.height)
+        lastTitleHitRect = OverlayCloseAffordance.titleHitRect(
+            contentRect: rect,
+            titleY: y,
+            titleHeight: ceil(titleSize.height),
+            textX: textX,
+            textWidth: textWidth
+        )
 
         (title as NSString).draw(
             with: NSRect(x: textX, y: y, width: textWidth, height: ceil(titleSize.height) + 2.0),
@@ -959,6 +1046,43 @@ final class OverlayContentView: NSView {
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             attributes: messageAttributes
         )
+
+        if isCloseButtonVisible {
+            drawCloseButton()
+        }
+    }
+
+    private func revealCloseButton() {
+        isCloseButtonVisible = true
+        needsDisplay = true
+        closeButtonHideTimer?.invalidate()
+        closeButtonHideTimer = Timer.scheduledTimer(withTimeInterval: OverlayCloseAffordance.closeButtonRevealDuration, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.isCloseButtonVisible = false
+                self?.needsDisplay = true
+            }
+        }
+    }
+
+    private func drawCloseButton() {
+        let rect = OverlayCloseAffordance.closeButtonRect(in: bounds)
+        let path = NSBezierPath(ovalIn: rect)
+        NSColor(calibratedWhite: 0.0, alpha: 0.58).setFill()
+        path.fill()
+        NSColor(calibratedWhite: 1.0, alpha: 0.24).setStroke()
+        path.lineWidth = 1.0
+        path.stroke()
+
+        let inset: CGFloat = 7.0
+        let linePath = NSBezierPath()
+        linePath.move(to: NSPoint(x: rect.minX + inset, y: rect.minY + inset))
+        linePath.line(to: NSPoint(x: rect.maxX - inset, y: rect.maxY - inset))
+        linePath.move(to: NSPoint(x: rect.maxX - inset, y: rect.minY + inset))
+        linePath.line(to: NSPoint(x: rect.minX + inset, y: rect.maxY - inset))
+        NSColor(calibratedWhite: 1.0, alpha: 0.92).setStroke()
+        linePath.lineWidth = 2.0
+        linePath.lineCapStyle = .round
+        linePath.stroke()
     }
 
     static func size(title: String, message: String, constrainedTo maxWidth: CGFloat, options: Options) -> NSSize {
