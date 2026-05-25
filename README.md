@@ -48,6 +48,7 @@ osd-notify clear --source codex
 ```bash
 osd-notify show "请暂停手动操作，Codex 正在控制 Chrome" --source codex
 osd-notify show "Chrome 正在被自动化控制" --source codex --ttl 600
+osd-notify show "参考链接" --url https://example.com
 osd-notify show "落木千山天远大，澄江一道月分明。" --source '黄庭坚《登快阁》' --style lyric
 osd-notify play ./song.lrc
 osd-notify play ./subtitle.srt --speed 20 --limit 8
@@ -64,6 +65,7 @@ osd-notify clear --all
 
 - `--ttl seconds`：显示时长，单位秒。
 - `--source name`：调用来源身份。同一个来源的新 `show` 会替换旧 OSD；不同来源可以并存。
+- `--url https://...` / `--link https://...`：给 OSD 绑定链接，右下角会显示链接图标，点击用默认浏览器打开。
 - `--level info|warn|busy|done`：等级预设，影响标题和状态色。
 - `--position top|center|bottom`：默认布局位置；如果同来源已有拖动位置记忆，则优先使用记忆位置。
 - `--style soft|glass|lyric`：视觉样式。`lyrics` 也可作为 `lyric` 的别名。
@@ -75,7 +77,7 @@ osd-notify clear --all
 - `--click-through`：鼠标事件穿透到下方窗口。
 - `--blocks-clicks`：OSD 接收鼠标事件；`glass` 和 `lyric` 默认如此，因此可以拖动。
 
-默认可点击的 OSD 支持手动关闭：双击标题行会显示右上角关闭按钮，点击关闭当前 `source`。如果使用了 `--click-through`，窗口不会接收鼠标事件，因此不能用这个手动关闭入口。
+默认可点击的 OSD 支持两个手动入口：双击标题行会显示右上角关闭按钮，点击关闭当前 `source`；传入 `--url` 时右下角会显示链接图标，点击打开链接。如果使用了 `--click-through`，窗口不会接收鼠标事件，因此不能用这些手动入口。
 
 ## 定时文本播放
 
@@ -179,6 +181,7 @@ osd-notify poem 劝学 --refresh --dry-run --limit 5
 - `--dry-run`：只预览选中文章和拆句结果，不显示 OSD。
 - `--no-clear`：播放结束后不自动清理最后一句。
 - `--source name`：覆盖 OSD 标题；默认使用 `作者《标题》`。
+- 原文页 URL 会自动绑定到右下角链接图标；也可以用 `--url` 覆盖。
 - `--position`、`--font`、`--font-size`、`--title-size`、`--opacity`、`--window-opacity`、`--click-through`、`--blocks-clicks`：含义与 `show` / `recite` 一致。
 
 ## 样式

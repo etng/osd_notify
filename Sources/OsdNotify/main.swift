@@ -105,6 +105,7 @@ struct Options: Codable {
     var fontFamily: String? = "PingFang SC"
     var titleSize: CGFloat = 16.0
     var messageSize: CGFloat = 36.0
+    var linkURL: String?
     var opacity: CGFloat = OverlayStyle.glass.defaultOpacity
     var windowOpacity: CGFloat = 1.0
     var stackGroup: String?
@@ -906,6 +907,21 @@ struct OverlayCloseAffordance {
     }
 }
 
+struct OverlayLinkAffordance {
+    static let linkButtonSize: CGFloat = 24.0
+    static let linkButtonTrailingInset: CGFloat = 20.0
+    static let linkButtonBottomInset: CGFloat = 20.0
+
+    static func linkButtonRect(in bounds: NSRect) -> NSRect {
+        NSRect(
+            x: bounds.maxX - linkButtonTrailingInset - linkButtonSize,
+            y: bounds.minY + linkButtonBottomInset,
+            width: linkButtonSize,
+            height: linkButtonSize
+        )
+    }
+}
+
 final class OverlayContentView: NSView {
     private static let horizontalPadding: CGFloat = 30.0
     private static let verticalPadding: CGFloat = 22.0
@@ -916,6 +932,7 @@ final class OverlayContentView: NSView {
     private let message: String
     private let level: NoticeLevel
     private let options: Options
+    private let linkURL: URL?
     private let closeAction: () -> Void
     private var isCloseButtonVisible = false
     private var closeButtonHideTimer: Timer?
@@ -933,6 +950,7 @@ final class OverlayContentView: NSView {
         self.message = message
         self.level = level
         self.options = options
+        self.linkURL = Self.validatedLinkURL(options.linkURL)
         self.closeAction = closeAction
         super.init(frame: frame)
         wantsLayer = true
@@ -950,6 +968,12 @@ final class OverlayContentView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if let linkURL,
+           OverlayLinkAffordance.linkButtonRect(in: bounds).contains(point) {
+            NSWorkspace.shared.open(linkURL)
+            return
+        }
+
         if isCloseButtonVisible,
            OverlayCloseAffordance.closeButtonRect(in: bounds).contains(point) {
             closeButtonHideTimer?.invalidate()
@@ -1050,6 +1074,9 @@ final class OverlayContentView: NSView {
         if isCloseButtonVisible {
             drawCloseButton()
         }
+        if linkURL != nil {
+            drawLinkButton()
+        }
     }
 
     private func revealCloseButton() {
@@ -1083,6 +1110,41 @@ final class OverlayContentView: NSView {
         linePath.lineWidth = 2.0
         linePath.lineCapStyle = .round
         linePath.stroke()
+    }
+
+    private func drawLinkButton() {
+        let rect = OverlayLinkAffordance.linkButtonRect(in: bounds)
+        let path = NSBezierPath(ovalIn: rect)
+        NSColor(calibratedWhite: 0.0, alpha: 0.48).setFill()
+        path.fill()
+        NSColor(calibratedWhite: 1.0, alpha: 0.22).setStroke()
+        path.lineWidth = 1.0
+        path.stroke()
+
+        let iconRect = rect.insetBy(dx: 6.0, dy: 6.0)
+        let arrowPath = NSBezierPath()
+        arrowPath.move(to: NSPoint(x: iconRect.minX + 1.0, y: iconRect.minY + 1.0))
+        arrowPath.line(to: NSPoint(x: iconRect.maxX - 1.0, y: iconRect.maxY - 1.0))
+        arrowPath.move(to: NSPoint(x: iconRect.maxX - 1.0, y: iconRect.maxY - 1.0))
+        arrowPath.line(to: NSPoint(x: iconRect.maxX - 1.0, y: iconRect.midY + 1.0))
+        arrowPath.move(to: NSPoint(x: iconRect.maxX - 1.0, y: iconRect.maxY - 1.0))
+        arrowPath.line(to: NSPoint(x: iconRect.midX + 1.0, y: iconRect.maxY - 1.0))
+        NSColor(calibratedWhite: 1.0, alpha: 0.92).setStroke()
+        arrowPath.lineWidth = 2.0
+        arrowPath.lineCapStyle = .round
+        arrowPath.lineJoinStyle = .round
+        arrowPath.stroke()
+    }
+
+    private static func validatedLinkURL(_ rawValue: String?) -> URL? {
+        guard let rawValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty,
+              let url = URL(string: rawValue),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme) else {
+            return nil
+        }
+        return url
     }
 
     static func size(title: String, message: String, constrainedTo maxWidth: CGFloat, options: Options) -> NSSize {
@@ -1327,15 +1389,16 @@ final class DaemonServer: @unchecked Sendable {
 func printUsage() {
     let usage = """
     用法:
-      osd-notify show [message] [--source name] [--ttl seconds] [--level info|warn|busy|done] [--position top|center|bottom] [--style soft|glass|lyric] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
-      osd-notify play file.lrc|file.srt|video.mkv [...] [--source name] [--speed rate] [--limit count] [--stream index ...] [--list-subtitles] [--no-cache|--refresh-cache|--warm-cache] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
-      osd-notify recite [text|file.txt ...] [--file path] [--text text] [--stdin] [--source name] [--interval seconds] [--delimiters chars] [--min-chars count] [--max-chars count] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
-      osd-notify poem [random|title] [--refresh] [--source name] [--interval seconds] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
+      osd-notify show [message] [--source name] [--url https://...] [--ttl seconds] [--level info|warn|busy|done] [--position top|center|bottom] [--style soft|glass|lyric] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
+      osd-notify play file.lrc|file.srt|video.mkv [...] [--source name] [--url https://...] [--speed rate] [--limit count] [--stream index ...] [--list-subtitles] [--no-cache|--refresh-cache|--warm-cache] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
+      osd-notify recite [text|file.txt ...] [--file path] [--text text] [--stdin] [--source name] [--url https://...] [--interval seconds] [--delimiters chars] [--min-chars count] [--max-chars count] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
+      osd-notify poem [random|title] [--refresh] [--source name] [--url https://...] [--interval seconds] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify clear [--source name] [--all]
 
     示例:
       osd-notify show
       osd-notify show --source codex
+      osd-notify show "参考链接" --url https://example.com
       osd-notify show "Glass test" --style glass
       osd-notify show "Lyric test" --style lyric
       osd-notify show "Automation finished" --ttl 3 --level done
@@ -1360,13 +1423,14 @@ func printUsage() {
       show 默认消息: 请暂停手动操作，Codex 正在控制 Chrome
       默认样式: glass、bottom、PingFang SC、36pt 主文字、42% 背景透明度、3600 秒 TTL。
       OSD 会同时显示在所有已连接显示器上。
+      传入 --url 后，OSD 右下角会显示链接图标，点击会用默认浏览器打开该地址。
       不同来源可以同时显示；相同位置已有 OSD 时会自动错开堆叠。
       clear 默认只清理当前来源；只有 --all 会清理所有来源。
       标题优先使用显式 source / 环境 source；否则读取直接父进程 PID 对应的 macOS 应用名。
       play 默认用输入文件 basename 作为 source，并始终用 lyric 样式按时间戳播放。多个 LRC/SRT 文件会按命令顺序从上到下堆叠显示。
       视频文件会先用 ffprobe 探测文本字幕流；多字幕流时会列出编号，直接输入 1,3 或 1 3 回车即可；空回车才尝试打开 gum TUI。视频字幕默认边抽边播，并缓存到 ~/Library/Caches/osd-notify/subtitles/。
       recite 读取普通文本，默认按中文/英文逗号、句号、问号、叹号和分号初拆，再均衡组合成 7-20 字左右的字幕句；--delimiters 可自定义切分字符。
-      poem 首次运行会从古文岛高中文言入口采集原文并缓存到 ~/Library/Caches/osd-notify/poems/；默认随机，传标题时做近似匹配；默认每 15 秒显示一句。
+      poem 首次运行会从古文岛高中文言入口采集原文并缓存到 ~/Library/Caches/osd-notify/poems/；默认随机，传标题时做近似匹配；默认每 15 秒显示一句；会自动把原文来源 URL 放到链接图标。
       glass 默认可拖动；soft 默认鼠标穿透。
     """
     print(usage)
@@ -1459,6 +1523,13 @@ func parsePlayOptions(_ args: [String]) throws -> PlayOptions {
                 throw CLIError.message("--source expects a source name.")
             }
             options.source = args[index]
+
+        case "--url", "--link":
+            index += 1
+            guard index < args.count, let linkURL = parseDisplayLinkURL(args[index]) else {
+                throw CLIError.message("\(arg) expects an http or https URL.")
+            }
+            options.displayOptions.linkURL = linkURL
 
         case "--speed":
             index += 1
@@ -1615,6 +1686,13 @@ func parseReciteOptions(_ args: [String]) throws -> ReciteOptions {
                 throw CLIError.message("\(arg) expects a source name.")
             }
             options.source = args[index]
+
+        case "--url", "--link":
+            index += 1
+            guard index < args.count, let linkURL = parseDisplayLinkURL(args[index]) else {
+                throw CLIError.message("\(arg) expects an http or https URL.")
+            }
+            options.displayOptions.linkURL = linkURL
 
         case "--file":
             index += 1
@@ -1804,6 +1882,13 @@ func parsePoemOptions(_ args: [String]) throws -> PoemOptions {
             }
             options.source = args[index]
 
+        case "--url", "--link":
+            index += 1
+            guard index < args.count, let linkURL = parseDisplayLinkURL(args[index]) else {
+                throw CLIError.message("\(arg) expects an http or https URL.")
+            }
+            options.displayOptions.linkURL = linkURL
+
         case "--interval", "--line-interval":
             index += 1
             guard index < args.count,
@@ -1945,6 +2030,13 @@ func parseOptions(_ args: [String]) throws -> Options {
             options.source = args[index]
             options.sourceWasProvidedByCaller = true
 
+        case "--url", "--link":
+            index += 1
+            guard index < args.count, let linkURL = parseDisplayLinkURL(args[index]) else {
+                throw CLIError.message("\(arg) expects an http or https URL.")
+            }
+            options.linkURL = linkURL
+
         case "--ttl":
             index += 1
             guard index < args.count, let ttl = TimeInterval(args[index]), ttl > 0 else {
@@ -2073,6 +2165,17 @@ func parseOpacity(_ rawValue: String) -> CGFloat? {
     }
 
     return CGFloat(opacity)
+}
+
+func parseDisplayLinkURL(_ rawValue: String) -> String? {
+    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          let url = URL(string: trimmed),
+          let scheme = url.scheme?.lowercased(),
+          ["http", "https"].contains(scheme) else {
+        return nil
+    }
+    return trimmed
 }
 
 let stateDirectoryURL = FileManager.default.temporaryDirectory.appendingPathComponent("osd-notify", isDirectory: true)
@@ -3874,6 +3977,17 @@ func recitePoem(_ options: PoemOptions) throws {
         item = randomItem
     }
 
+    let reciteOptions = recitationOptions(for: item, poemOptions: options)
+
+    if options.dryRun {
+        print("选中：\(poemDisplayTitle(item))")
+        print("URL：\(item.url)")
+    }
+
+    try recitePlainText(reciteOptions)
+}
+
+func recitationOptions(for item: GuwendaoPoemItem, poemOptions options: PoemOptions) -> ReciteOptions {
     var reciteOptions = ReciteOptions()
     reciteOptions.inputs = [.text(item.content)]
     reciteOptions.source = options.source ?? poemDisplayTitle(item)
@@ -3883,13 +3997,10 @@ func recitePoem(_ options: PoemOptions) throws {
     reciteOptions.clearWhenFinished = options.clearWhenFinished
     reciteOptions.dryRun = options.dryRun
     reciteOptions.displayOptions = options.displayOptions
-
-    if options.dryRun {
-        print("选中：\(poemDisplayTitle(item))")
-        print("URL：\(item.url)")
+    if reciteOptions.displayOptions.linkURL == nil {
+        reciteOptions.displayOptions.linkURL = item.url
     }
-
-    try recitePlainText(reciteOptions)
+    return reciteOptions
 }
 
 func poemDisplayTitle(_ item: GuwendaoPoemItem) -> String {
