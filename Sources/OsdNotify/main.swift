@@ -150,6 +150,18 @@ struct ReciteOptions {
     var displayOptions: Options = lyricPlaybackOptions()
 }
 
+struct PoemOptions {
+    var query: String?
+    var source: String?
+    var refreshCache: Bool = false
+    var interval: TimeInterval = 15.0
+    var speed: Double = 1.0
+    var limit: Int?
+    var clearWhenFinished: Bool = true
+    var dryRun: Bool = false
+    var displayOptions: Options = lyricPlaybackOptions()
+}
+
 let guwendaoBaseURL = URL(string: "https://www.guwendao.net")!
 let guwendaoGaowenEntryURL = URL(string: "https://www.guwendao.net/wenyan/gaowen.aspx")!
 
@@ -167,6 +179,12 @@ struct GuwendaoPoemItem: Codable {
     let dynasty: String
     let url: String
     let content: String
+}
+
+struct GuwendaoPoemCache: Codable {
+    let sourceURL: String
+    let fetchedAt: Date
+    let items: [GuwendaoPoemItem]
 }
 
 struct TimedTextLine {
@@ -354,6 +372,7 @@ enum Command {
     case clear(ClearOptions)
     case play(PlayOptions)
     case recite(ReciteOptions)
+    case poem(PoemOptions)
     case daemon
 }
 
@@ -1187,6 +1206,7 @@ func printUsage() {
       osd-notify show [message] [--source name] [--ttl seconds] [--level info|warn|busy|done] [--position top|center|bottom] [--style soft|glass|lyric] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify play file.lrc|file.srt|video.mkv [...] [--source name] [--speed rate] [--limit count] [--stream index ...] [--list-subtitles] [--no-cache|--refresh-cache|--warm-cache] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify recite [text|file.txt ...] [--file path] [--text text] [--stdin] [--source name] [--interval seconds] [--delimiters chars] [--min-chars count] [--max-chars count] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
+      osd-notify poem [random|title] [--refresh] [--source name] [--interval seconds] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify clear [--source name] [--all]
 
     示例:
@@ -1205,6 +1225,9 @@ func printUsage() {
       osd-notify recite ./lantingxu.txt --source 兰亭序 --interval 8
       osd-notify recite --text "永和九年，岁在癸丑，暮春之初。" --source 兰亭序 --interval 5
       osd-notify recite ./lantingxu.txt --source 兰亭序 --dry-run
+      osd-notify poem random
+      osd-notify poem 劝学 --interval 15
+      osd-notify poem 劝学 --refresh --dry-run --limit 5
       osd-notify clear
       osd-notify clear --source codex
       osd-notify clear --all
@@ -1219,6 +1242,7 @@ func printUsage() {
       play 默认用输入文件 basename 作为 source，并始终用 lyric 样式按时间戳播放。多个 LRC/SRT 文件会按命令顺序从上到下堆叠显示。
       视频文件会先用 ffprobe 探测文本字幕流；多字幕流时会列出编号，直接输入 1,3 或 1 3 回车即可；空回车才尝试打开 gum TUI。视频字幕默认边抽边播，并缓存到 ~/Library/Caches/osd-notify/subtitles/。
       recite 读取普通文本，默认按中文/英文逗号、句号、问号、叹号和分号初拆，再均衡组合成 7-20 字左右的字幕句；--delimiters 可自定义切分字符。
+      poem 首次运行会从古文岛高中文言入口采集原文并缓存到 ~/Library/Caches/osd-notify/poems/；默认随机，传标题时做近似匹配；默认每 15 秒显示一句。
       glass 默认可拖动；soft 默认鼠标穿透。
     """
     print(usage)
@@ -1249,6 +1273,11 @@ func parseCommand() throws -> Command {
     if args.first == "recite" {
         args.removeFirst()
         return .recite(try parseReciteOptions(args))
+    }
+
+    if args.first == "poem" {
+        args.removeFirst()
+        return .poem(try parsePoemOptions(args))
     }
 
     if args.first == "show" {
@@ -1618,6 +1647,140 @@ func parseReciteOptions(_ args: [String]) throws -> ReciteOptions {
     }
     if options.preferredMaxCharacters < options.minCharacters {
         throw CLIError.message("--max-chars must be greater than or equal to --min-chars.")
+    }
+
+    if !opacityWasSet {
+        options.displayOptions.opacity = OverlayStyle.lyric.defaultOpacity
+    }
+    if !passThroughWasSet {
+        options.displayOptions.passThrough = OverlayStyle.lyric.defaultPassThrough
+    }
+
+    return options
+}
+
+func parsePoemOptions(_ args: [String]) throws -> PoemOptions {
+    var options = PoemOptions()
+    var opacityWasSet = false
+    var passThroughWasSet = false
+    var titleParts: [String] = []
+    var index = 0
+
+    while index < args.count {
+        let arg = args[index]
+
+        switch arg {
+        case "--refresh", "--refresh-cache":
+            options.refreshCache = true
+
+        case "--source":
+            index += 1
+            guard index < args.count, !args[index].hasPrefix("--") else {
+                throw CLIError.message("--source expects a source name.")
+            }
+            options.source = args[index]
+
+        case "--interval", "--line-interval":
+            index += 1
+            guard index < args.count,
+                  let interval = TimeInterval(args[index]),
+                  interval > 0 else {
+                throw CLIError.message("\(arg) expects a positive number of seconds.")
+            }
+            options.interval = interval
+
+        case "--speed":
+            index += 1
+            guard index < args.count,
+                  let speed = Double(args[index]),
+                  speed > 0 else {
+                throw CLIError.message("--speed expects a positive playback rate.")
+            }
+            options.speed = speed
+
+        case "--limit":
+            index += 1
+            guard index < args.count,
+                  let limit = Int(args[index]),
+                  limit > 0 else {
+                throw CLIError.message("--limit expects a positive integer.")
+            }
+            options.limit = limit
+
+        case "--dry-run", "--preview":
+            options.dryRun = true
+
+        case "--no-clear":
+            options.clearWhenFinished = false
+
+        case "--position":
+            index += 1
+            guard index < args.count, let position = NoticePosition(rawValue: args[index]) else {
+                throw CLIError.message("--position expects one of: top, center, bottom.")
+            }
+            options.displayOptions.position = position
+
+        case "--font", "--font-family":
+            index += 1
+            guard index < args.count, !args[index].hasPrefix("--") else {
+                throw CLIError.message("\(arg) expects a font family name.")
+            }
+            options.displayOptions.fontFamily = args[index]
+
+        case "--font-size", "--message-size":
+            index += 1
+            guard index < args.count, let size = Double(args[index]), size > 0 else {
+                throw CLIError.message("\(arg) expects a positive point size.")
+            }
+            options.displayOptions.messageSize = CGFloat(size)
+
+        case "--title-size":
+            index += 1
+            guard index < args.count, let size = Double(args[index]), size > 0 else {
+                throw CLIError.message("--title-size expects a positive point size.")
+            }
+            options.displayOptions.titleSize = CGFloat(size)
+
+        case "--opacity", "--background-opacity":
+            index += 1
+            guard index < args.count, let opacity = parseOpacity(args[index]) else {
+                throw CLIError.message("\(arg) expects 0...1 or a percentage like 65%.")
+            }
+            options.displayOptions.opacity = opacity
+            opacityWasSet = true
+
+        case "--window-opacity":
+            index += 1
+            guard index < args.count, let opacity = parseOpacity(args[index]) else {
+                throw CLIError.message("--window-opacity expects 0...1 or a percentage like 65%.")
+            }
+            options.displayOptions.windowOpacity = opacity
+
+        case "--blocks-clicks":
+            options.displayOptions.passThrough = false
+            passThroughWasSet = true
+
+        case "--click-through":
+            options.displayOptions.passThrough = true
+            passThroughWasSet = true
+
+        case "--help", "-h":
+            printUsage()
+            exit(0)
+
+        default:
+            if arg.hasPrefix("--") {
+                throw CLIError.message("Unknown poem option: \(arg)")
+            }
+            titleParts.append(arg)
+        }
+
+        index += 1
+    }
+
+    let query = titleParts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    if !query.isEmpty, query.lowercased() != "random" {
+        options.query = query
     }
 
     if !opacityWasSet {
@@ -3482,6 +3645,136 @@ func decodeHTMLEntities(_ value: String) -> String {
     return text
 }
 
+func guwendaoPoemCacheDirectoryURL() throws -> URL {
+    let baseURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches", isDirectory: true)
+    let url = baseURL
+        .appendingPathComponent("osd-notify", isDirectory: true)
+        .appendingPathComponent("poems", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+func guwendaoPoemCacheFileURL() throws -> URL {
+    try guwendaoPoemCacheDirectoryURL()
+        .appendingPathComponent("guwendao-gaowen.json")
+}
+
+func readGuwendaoPoemCache() throws -> GuwendaoPoemCache? {
+    let url = try guwendaoPoemCacheFileURL()
+    guard FileManager.default.fileExists(atPath: url.path) else {
+        return nil
+    }
+    let data = try Data(contentsOf: url)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try decoder.decode(GuwendaoPoemCache.self, from: data)
+}
+
+func writeGuwendaoPoemCache(_ cache: GuwendaoPoemCache) throws {
+    let url = try guwendaoPoemCacheFileURL()
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(cache)
+    try data.write(to: url, options: .atomic)
+}
+
+func loadGuwendaoPoemCache(refresh: Bool) throws -> GuwendaoPoemCache {
+    if !refresh {
+        do {
+            if let cache = try readGuwendaoPoemCache(), !cache.items.isEmpty {
+                return cache
+            }
+        } catch {
+            fputs("古文缓存不可读，将重新采集：\(error)\n", stderr)
+        }
+    }
+
+    let cache = try fetchGuwendaoPoemCache()
+    try writeGuwendaoPoemCache(cache)
+    print("已缓存 \(cache.items.count) 篇高中文言文：\(try guwendaoPoemCacheFileURL().path)")
+    return cache
+}
+
+func fetchGuwendaoPoemCache() throws -> GuwendaoPoemCache {
+    let entryHTML = try fetchText(from: guwendaoGaowenEntryURL)
+    let links = parseGuwendaoEntryLinks(entryHTML, baseURL: guwendaoBaseURL)
+    guard !links.isEmpty else {
+        throw CLIError.message("没有从古文岛高中文言入口解析到作品链接。")
+    }
+
+    var items: [GuwendaoPoemItem] = []
+    for (index, link) in links.enumerated() {
+        do {
+            let html = try fetchText(from: link.url)
+            let item = try parseGuwendaoPoemPage(html, link: link)
+            items.append(item)
+            fputs("采集 \(index + 1)/\(links.count)：\(item.title)\n", stderr)
+        } catch {
+            fputs("跳过 \(link.entryTitle)：\(error)\n", stderr)
+        }
+        if index + 1 < links.count {
+            Thread.sleep(forTimeInterval: 0.08)
+        }
+    }
+
+    guard !items.isEmpty else {
+        throw CLIError.message("古文岛入口中没有成功采集到可播放原文。")
+    }
+
+    return GuwendaoPoemCache(
+        sourceURL: guwendaoGaowenEntryURL.absoluteString,
+        fetchedAt: Date(),
+        items: items
+    )
+}
+
+func fetchText(from url: URL) throws -> String {
+    let data = try Data(contentsOf: url)
+    if let text = String(data: data, encoding: .utf8) {
+        return text
+    }
+    return String(decoding: data, as: UTF8.self)
+}
+
+func recitePoem(_ options: PoemOptions) throws {
+    let cache = try loadGuwendaoPoemCache(refresh: options.refreshCache)
+    let item: GuwendaoPoemItem
+    if let query = options.query {
+        item = try bestPoemMatch(for: query, in: cache.items)
+    } else {
+        guard let randomItem = cache.items.randomElement() else {
+            throw CLIError.message("古文池为空。")
+        }
+        item = randomItem
+    }
+
+    var reciteOptions = ReciteOptions()
+    reciteOptions.inputs = [.text(item.content)]
+    reciteOptions.source = options.source ?? poemDisplayTitle(item)
+    reciteOptions.interval = options.interval
+    reciteOptions.speed = options.speed
+    reciteOptions.limit = options.limit
+    reciteOptions.clearWhenFinished = options.clearWhenFinished
+    reciteOptions.dryRun = options.dryRun
+    reciteOptions.displayOptions = options.displayOptions
+
+    if options.dryRun {
+        print("选中：\(poemDisplayTitle(item))")
+        print("URL：\(item.url)")
+    }
+
+    try recitePlainText(reciteOptions)
+}
+
+func poemDisplayTitle(_ item: GuwendaoPoemItem) -> String {
+    if item.author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return item.title
+    }
+    return "\(item.author)《\(item.title)》"
+}
+
 func recitePlainText(_ options: ReciteOptions) throws {
     let inputText = try options.inputs
         .map(readRecitationInput)
@@ -4115,6 +4408,10 @@ struct OsdNotifyApp {
 
             case .recite(let options):
                 try recitePlainText(options)
+                return
+
+            case .poem(let options):
+                try recitePoem(options)
                 return
             }
         } catch {

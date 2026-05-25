@@ -51,6 +51,8 @@ osd-notify show "落木千山天远大，澄江一道月分明。" --source '黄
 osd-notify play ./song.lrc
 osd-notify play ./subtitle.srt --speed 20 --limit 8
 osd-notify recite ./lantingxu.txt --source '兰亭序' --interval 8
+osd-notify poem random
+osd-notify poem 劝学 --interval 15
 osd-notify clear --source codex
 osd-notify clear --all
 ```
@@ -142,6 +144,39 @@ osd-notify recite --text '永和九年，岁在癸丑，暮春之初。' --sourc
 - `--limit count`：只播放前 N 句，适合 smoke test。
 - `--dry-run`：只预览拆句结果。
 - `--position`、`--font`、`--font-size`、`--title-size`、`--opacity`、`--window-opacity`、`--click-through`、`--blocks-clicks`：含义与 `show` 一致。
+
+## 古文岛高中文言文随机池
+
+`poem` 子命令以古文岛高中文言文入口页作为采集来源，首次运行会抓取主内容区中 `/shiwenv_*.aspx` 作品页，结构化保存标题、作者、朝代、URL 和原文正文。正文只取作品页原文区域，不包含译文、注释或赏析。
+
+```bash
+osd-notify poem
+osd-notify poem random
+osd-notify poem 劝学
+osd-notify poem 劝学 --interval 15
+osd-notify poem 劝学 --refresh --dry-run --limit 5
+```
+
+默认行为：
+
+- `poem` 和 `poem random` 等价，从本地古文池随机选择一篇。
+- `poem 劝学` 会按标题近似匹配，能匹配到 `劝学(节选)` 这类正文标题。
+- 首次无缓存时联网采集；后续默认使用缓存。
+- 缓存位置：`~/Library/Caches/osd-notify/poems/guwendao-gaowen.json`。
+- `--refresh` 会重新采集并覆盖缓存。
+- 句间间隔默认 `15` 秒；`--interval seconds` 可调整。
+- 播放样式复用 `recite` 的 `lyric` OSD。
+
+常用参数：
+
+- `--refresh`：强制重新采集古文岛高中文言文池。
+- `--interval seconds`：每句起播间隔，默认 `15`。
+- `--speed rate`：播放速度倍率，主要用于快速验证。
+- `--limit count`：只播放前 N 句。
+- `--dry-run`：只预览选中文章和拆句结果，不显示 OSD。
+- `--no-clear`：播放结束后不自动清理最后一句。
+- `--source name`：覆盖 OSD 标题；默认使用 `作者《标题》`。
+- `--position`、`--font`、`--font-size`、`--title-size`、`--opacity`、`--window-opacity`、`--click-through`、`--blocks-clicks`：含义与 `show` / `recite` 一致。
 
 ## 样式
 

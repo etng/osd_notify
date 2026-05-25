@@ -72,4 +72,65 @@ final class PoemTests: XCTestCase {
 
         XCTAssertEqual(match.id, "2")
     }
+
+    func testParsePoemOptionsDefaultsToRandomWithFifteenSecondInterval() throws {
+        let options = try parsePoemOptions([])
+
+        XCTAssertNil(options.query)
+        XCTAssertEqual(options.interval, 15.0)
+        XCTAssertFalse(options.refreshCache)
+        XCTAssertFalse(options.dryRun)
+        XCTAssertTrue(options.clearWhenFinished)
+    }
+
+    func testParsePoemOptionsTreatsRandomAsDefaultSelection() throws {
+        let options = try parsePoemOptions(["random"])
+
+        XCTAssertNil(options.query)
+    }
+
+    func testParsePoemOptionsAcceptsTitleAndPlaybackControls() throws {
+        let options = try parsePoemOptions([
+            "劝学",
+            "--interval", "2.5",
+            "--refresh",
+            "--dry-run",
+            "--limit", "3",
+            "--speed", "50",
+            "--no-clear"
+        ])
+
+        XCTAssertEqual(options.query, "劝学")
+        XCTAssertEqual(options.interval, 2.5)
+        XCTAssertTrue(options.refreshCache)
+        XCTAssertTrue(options.dryRun)
+        XCTAssertEqual(options.limit, 3)
+        XCTAssertEqual(options.speed, 50)
+        XCTAssertFalse(options.clearWhenFinished)
+    }
+
+    func testGuwendaoPoemCacheRoundTripsStructuredItems() throws {
+        let cache = GuwendaoPoemCache(
+            sourceURL: guwendaoGaowenEntryURL.absoluteString,
+            fetchedAt: Date(timeIntervalSince1970: 0),
+            items: [
+                GuwendaoPoemItem(
+                    id: "9b5ed8061abe",
+                    title: "劝学(节选)",
+                    entryTitle: "劝学",
+                    author: "荀子",
+                    dynasty: "先秦",
+                    url: "https://www.guwendao.net/shiwenv_9b5ed8061abe.aspx",
+                    content: "君子曰：学不可以已。"
+                )
+            ]
+        )
+
+        let data = try JSONEncoder().encode(cache)
+        let decoded = try JSONDecoder().decode(GuwendaoPoemCache.self, from: data)
+
+        XCTAssertEqual(decoded.sourceURL, guwendaoGaowenEntryURL.absoluteString)
+        XCTAssertEqual(decoded.items.first?.title, "劝学(节选)")
+        XCTAssertEqual(decoded.items.first?.content, "君子曰：学不可以已。")
+    }
 }
