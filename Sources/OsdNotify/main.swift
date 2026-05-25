@@ -150,6 +150,25 @@ struct ReciteOptions {
     var displayOptions: Options = lyricPlaybackOptions()
 }
 
+let guwendaoBaseURL = URL(string: "https://www.guwendao.net")!
+let guwendaoGaowenEntryURL = URL(string: "https://www.guwendao.net/wenyan/gaowen.aspx")!
+
+struct GuwendaoPoemLink {
+    let id: String
+    let entryTitle: String
+    let url: URL
+}
+
+struct GuwendaoPoemItem: Codable {
+    let id: String
+    let title: String
+    let entryTitle: String
+    let author: String
+    let dynasty: String
+    let url: String
+    let content: String
+}
+
 struct TimedTextLine {
     let start: TimeInterval
     let end: TimeInterval?
@@ -3169,6 +3188,298 @@ func runCapturedTUIProcess(
         stdout: String(decoding: stdoutData, as: UTF8.self),
         stderr: ""
     )
+}
+
+func parseGuwendaoEntryLinks(_ html: String, baseURL: URL) -> [GuwendaoPoemLink] {
+    guard let mainRange = html.range(of: #"<div\s+class=["']main3["'][^>]*>"#, options: .regularExpression),
+          let leftRange = html.range(
+            of: #"<div\s+class=["']left["'][^>]*>"#,
+            options: .regularExpression,
+            range: mainRange.upperBound..<html.endIndex
+          ),
+          let leftHTML = balancedHTMLElement(in: html, openingTagRange: leftRange, tagName: "div") else {
+        return []
+    }
+
+    let pattern = #"<a\b[^>]*href=["']([^"']*?/shiwenv_([0-9a-fA-F]+)\.aspx)["'][^>]*>(.*?)</a>"#
+    let matches = regexMatches(pattern, in: leftHTML, options: [.caseInsensitive, .dotMatchesLineSeparators])
+    var links: [GuwendaoPoemLink] = []
+    var seenIDs = Set<String>()
+
+    for match in matches {
+        guard match.numberOfRanges >= 4,
+              let hrefRange = Range(match.range(at: 1), in: leftHTML),
+              let idRange = Range(match.range(at: 2), in: leftHTML),
+              let titleRange = Range(match.range(at: 3), in: leftHTML) else {
+            continue
+        }
+
+        let id = String(leftHTML[idRange]).lowercased()
+        guard !seenIDs.contains(id) else {
+            continue
+        }
+        let href = String(leftHTML[hrefRange])
+        guard let url = URL(string: href, relativeTo: baseURL)?.absoluteURL else {
+            continue
+        }
+        let title = htmlToSingleLineText(String(leftHTML[titleRange]))
+        guard !title.isEmpty else {
+            continue
+        }
+
+        links.append(GuwendaoPoemLink(id: id, entryTitle: title, url: url))
+        seenIDs.insert(id)
+    }
+
+    return links
+}
+
+func parseGuwendaoPoemPage(_ html: String, link: GuwendaoPoemLink) throws -> GuwendaoPoemItem {
+    let zhengwenHTML: String
+    if let zhengwenRange = html.range(
+        of: #"<div\s+id=["']zhengwen\#(NSRegularExpression.escapedPattern(for: link.id))["'][^>]*>"#,
+        options: .regularExpression
+    ), let extracted = balancedHTMLElement(in: html, openingTagRange: zhengwenRange, tagName: "div") {
+        zhengwenHTML = extracted
+    } else {
+        zhengwenHTML = html
+    }
+
+    let title = firstRegexCapture(#"<h1\b[^>]*>(.*?)</h1>"#, in: zhengwenHTML)
+        .map(htmlToSingleLineText) ?? link.entryTitle
+    let sourceHTML = firstRegexCapture(#"<p\b[^>]*class=["'][^"']*\bsource\b[^"']*["'][^>]*>(.*?)</p>"#, in: zhengwenHTML) ?? ""
+    let sourceParts = regexMatches(#"<a\b[^>]*>(.*?)</a>"#, in: sourceHTML, options: [.caseInsensitive, .dotMatchesLineSeparators])
+        .compactMap { match -> String? in
+            guard let range = Range(match.range(at: 1), in: sourceHTML) else {
+                return nil
+            }
+            let text = htmlToSingleLineText(String(sourceHTML[range]))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "[]〔〕"))
+            return text.isEmpty ? nil : text
+        }
+    let author = sourceParts.first ?? ""
+    let dynasty = sourceParts.dropFirst().first ?? ""
+
+    guard let contsonRange = html.range(
+        of: #"<div\b[^>]*id=["']contson\#(NSRegularExpression.escapedPattern(for: link.id))["'][^>]*>"#,
+        options: .regularExpression
+    ), let contsonHTML = balancedHTMLElement(in: html, openingTagRange: contsonRange, tagName: "div") else {
+        throw CLIError.message("无法从 \(link.url.absoluteString) 提取原文。")
+    }
+
+    let content = poemContentText(from: contsonHTML)
+    guard !content.isEmpty else {
+        throw CLIError.message("从 \(link.url.absoluteString) 提取到的原文为空。")
+    }
+
+    return GuwendaoPoemItem(
+        id: link.id,
+        title: title,
+        entryTitle: link.entryTitle,
+        author: author,
+        dynasty: dynasty,
+        url: link.url.absoluteString,
+        content: content
+    )
+}
+
+func poemContentText(from html: String) -> String {
+    let paragraphs = regexMatches(#"<p\b[^>]*>(.*?)</p>"#, in: html, options: [.caseInsensitive, .dotMatchesLineSeparators])
+        .compactMap { match -> String? in
+            guard let range = Range(match.range(at: 1), in: html) else {
+                return nil
+            }
+            let text = htmlToMultilineText(String(html[range]))
+            return text.isEmpty ? nil : text
+        }
+
+    if !paragraphs.isEmpty {
+        return paragraphs.joined(separator: "\n")
+    }
+
+    return htmlToMultilineText(html)
+}
+
+func bestPoemMatch(for rawQuery: String, in items: [GuwendaoPoemItem]) throws -> GuwendaoPoemItem {
+    let query = normalizedPoemTitle(rawQuery)
+    guard !query.isEmpty else {
+        throw CLIError.message("标题不能为空。")
+    }
+    guard !items.isEmpty else {
+        throw CLIError.message("古文池为空。")
+    }
+
+    let scored = items.map { item -> (item: GuwendaoPoemItem, score: Int) in
+        let title = normalizedPoemTitle(item.title)
+        let entryTitle = normalizedPoemTitle(item.entryTitle)
+        let score = max(poemTitleScore(query: query, candidate: title), poemTitleScore(query: query, candidate: entryTitle))
+        return (item, score)
+    }
+    guard let best = scored.max(by: { $0.score < $1.score }), best.score > 0 else {
+        let candidates = items.prefix(5).map(\.title).joined(separator: "、")
+        throw CLIError.message("没有找到匹配标题 '\(rawQuery)' 的古文。候选示例：\(candidates)")
+    }
+    return best.item
+}
+
+func poemTitleScore(query: String, candidate: String) -> Int {
+    guard !query.isEmpty, !candidate.isEmpty else {
+        return 0
+    }
+    if query == candidate {
+        return 10_000 + candidate.count
+    }
+    if candidate.contains(query) {
+        return 8_000 + query.count * 10 - abs(candidate.count - query.count)
+    }
+    if query.contains(candidate) {
+        return 7_000 + candidate.count * 10 - abs(candidate.count - query.count)
+    }
+    let overlap = longestCommonSubsequenceLength(query, candidate)
+    return overlap * 100 - abs(candidate.count - query.count)
+}
+
+func longestCommonSubsequenceLength(_ lhs: String, _ rhs: String) -> Int {
+    let left = Array(lhs)
+    let right = Array(rhs)
+    guard !left.isEmpty, !right.isEmpty else {
+        return 0
+    }
+
+    var previous = Array(repeating: 0, count: right.count + 1)
+    var current = previous
+    for leftIndex in left.indices {
+        current[0] = 0
+        for rightIndex in right.indices {
+            if left[leftIndex] == right[rightIndex] {
+                current[rightIndex + 1] = previous[rightIndex] + 1
+            } else {
+                current[rightIndex + 1] = max(previous[rightIndex + 1], current[rightIndex])
+            }
+        }
+        swap(&previous, &current)
+    }
+    return previous[right.count]
+}
+
+func normalizedPoemTitle(_ title: String) -> String {
+    htmlToSingleLineText(title)
+        .filter { character in
+            !character.unicodeScalars.allSatisfy { scalar in
+                CharacterSet.whitespacesAndNewlines.contains(scalar)
+                    || CharacterSet.punctuationCharacters.contains(scalar)
+                    || CharacterSet.symbols.contains(scalar)
+            }
+        }
+}
+
+func balancedHTMLElement(in html: String, openingTagRange: Range<String.Index>, tagName: String) -> String? {
+    let openPattern = "<\(tagName)\\b"
+    let closePattern = "</\(tagName)>"
+    var depth = 1
+    var searchStart = openingTagRange.upperBound
+
+    while searchStart < html.endIndex {
+        let nextOpen = html.range(of: openPattern, options: [.regularExpression, .caseInsensitive], range: searchStart..<html.endIndex)
+        let nextClose = html.range(of: closePattern, options: [.caseInsensitive], range: searchStart..<html.endIndex)
+
+        guard let close = nextClose else {
+            return nil
+        }
+        if let open = nextOpen, open.lowerBound < close.lowerBound {
+            depth += 1
+            searchStart = open.upperBound
+            continue
+        }
+
+        depth -= 1
+        searchStart = close.upperBound
+        if depth == 0 {
+            return String(html[openingTagRange.lowerBound..<close.upperBound])
+        }
+    }
+
+    return nil
+}
+
+func firstRegexCapture(_ pattern: String, in text: String) -> String? {
+    guard let match = regexMatches(pattern, in: text, options: [.caseInsensitive, .dotMatchesLineSeparators]).first,
+          match.numberOfRanges >= 2,
+          let range = Range(match.range(at: 1), in: text) else {
+        return nil
+    }
+    return String(text[range])
+}
+
+func regexMatches(
+    _ pattern: String,
+    in text: String,
+    options: NSRegularExpression.Options = []
+) -> [NSTextCheckingResult] {
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+        return []
+    }
+    return regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+}
+
+func htmlToSingleLineText(_ html: String) -> String {
+    htmlToMultilineText(html)
+        .split(whereSeparator: \.isNewline)
+        .map(String.init)
+        .joined(separator: " ")
+        .replacingOccurrences(of: #"[ \t\u{00a0}\u{3000}]+"#, with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func htmlToMultilineText(_ html: String) -> String {
+    var text = normalizedLineEndings(html)
+    text = text.replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+    text = decodeHTMLEntities(text)
+    let lines = text
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .map { line in
+            String(line)
+                .replacingOccurrences(of: #"[ \t\u{00a0}\u{3000}]+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        .filter { !$0.isEmpty }
+    return lines.joined(separator: "\n")
+}
+
+func decodeHTMLEntities(_ value: String) -> String {
+    var text = value
+        .replacingOccurrences(of: "&nbsp;", with: " ")
+        .replacingOccurrences(of: "&amp;", with: "&")
+        .replacingOccurrences(of: "&lt;", with: "<")
+        .replacingOccurrences(of: "&gt;", with: ">")
+        .replacingOccurrences(of: "&quot;", with: "\"")
+        .replacingOccurrences(of: "&#39;", with: "'")
+        .replacingOccurrences(of: "&apos;", with: "'")
+
+    let pattern = #"&#(x?[0-9a-fA-F]+);"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        return text
+    }
+    let matches = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)).reversed()
+    for match in matches {
+        guard match.numberOfRanges >= 2,
+              let fullRange = Range(match.range(at: 0), in: text),
+              let numberRange = Range(match.range(at: 1), in: text) else {
+            continue
+        }
+        let rawNumber = String(text[numberRange])
+        let scalarValue: UInt32?
+        if rawNumber.lowercased().hasPrefix("x") {
+            scalarValue = UInt32(rawNumber.dropFirst(), radix: 16)
+        } else {
+            scalarValue = UInt32(rawNumber, radix: 10)
+        }
+        if let scalarValue, let scalar = UnicodeScalar(scalarValue) {
+            text.replaceSubrange(fullRange, with: String(Character(scalar)))
+        }
+    }
+    return text
 }
 
 func recitePlainText(_ options: ReciteOptions) throws {
