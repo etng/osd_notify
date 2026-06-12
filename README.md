@@ -55,6 +55,7 @@ osd-notify play ./subtitle.srt --speed 20 --limit 8
 osd-notify recite ./lantingxu.txt --source '兰亭序' --interval 8
 osd-notify poem random
 osd-notify poem 劝学 --interval 15
+osd-notify poetry random --dry-run
 osd-notify clear --source codex
 osd-notify clear --all
 ```
@@ -183,6 +184,39 @@ osd-notify poem 劝学 --refresh --dry-run --limit 5
 - `--source name`：覆盖 OSD 标题；默认使用 `作者《标题》`。
 - 原文页 URL 会自动绑定到右下角链接图标；也可以用 `--url` 覆盖。
 - `--position`、`--font`、`--font-size`、`--title-size`、`--opacity`、`--window-opacity`、`--click-through`、`--blocks-clicks`：含义与 `show` / `recite` 一致。
+
+## 在线随机诗词
+
+`poetry` 子命令会调用 Palemoky 的在线随机诗词 API：
+
+```bash
+osd-notify poetry
+osd-notify poetry random
+osd-notify poetry random --dry-run
+osd-notify poetry random --interval 15 --limit 4
+```
+
+默认行为：
+
+- 请求 `https://poetry.palemoky.com/api/poems/random?lang=zh-Hans`。
+- OSD 标题使用 API 返回的 `title`。
+- `content` 数组里的每个元素按原样作为一行显示，不再按逗号、句号重新拆分。
+- 默认每 `15` 秒显示下一行；`--interval seconds` 可调整。
+- 支持 `--lang` 覆盖语言参数，默认 `zh-Hans`。
+- 支持 `--dry-run` 预览，不显示 OSD。
+
+常用参数：
+
+- `--lang code`：API 语言参数，默认 `zh-Hans`。
+- `--interval seconds`：每行起播间隔。
+- `--speed rate`：播放速度倍率，适合测试。
+- `--limit count`：只播放前 N 行。
+- `--dry-run`：只预览返回诗词和时间线。
+- `--no-clear`：播放结束后不自动清理最后一行。
+- `--source name`：覆盖 OSD source；标题仍使用 API 返回的诗词标题。
+- `--url https://...`：覆盖右下角链接图标地址。
+
+注意：该 API 当前可能对 CLI 直接请求返回 Cloudflare challenge。如果遇到这种情况，`poetry` 会明确报错；可以稍后重试，或先在浏览器访问 `https://poetry.palemoky.com/` 完成验证。
 
 ## 样式
 

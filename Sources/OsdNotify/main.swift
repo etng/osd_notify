@@ -163,8 +163,25 @@ struct PoemOptions {
     var displayOptions: Options = lyricPlaybackOptions()
 }
 
+enum PoetryMode: Equatable {
+    case random
+}
+
+struct PoetryOptions {
+    var mode: PoetryMode = .random
+    var lang: String = "zh-Hans"
+    var source: String?
+    var interval: TimeInterval = 15.0
+    var speed: Double = 1.0
+    var limit: Int?
+    var clearWhenFinished: Bool = true
+    var dryRun: Bool = false
+    var displayOptions: Options = lyricPlaybackOptions()
+}
+
 let guwendaoBaseURL = URL(string: "https://www.guwendao.net")!
 let guwendaoGaowenEntryURL = URL(string: "https://www.guwendao.net/wenyan/gaowen.aspx")!
+let palemokyPoetryBaseURL = URL(string: "https://poetry.palemoky.com")!
 
 struct GuwendaoPoemLink {
     let id: String
@@ -186,6 +203,41 @@ struct GuwendaoPoemCache: Codable {
     let sourceURL: String
     let fetchedAt: Date
     let items: [GuwendaoPoemItem]
+}
+
+struct PalemokyRandomPoemResponse: Decodable {
+    let ok: Bool
+    let status: Int
+    let url: String
+    let data: PalemokyRandomPoemPayload
+
+    var poem: PalemokyPoem {
+        data.data
+    }
+}
+
+struct PalemokyRandomPoemPayload: Decodable {
+    let data: PalemokyPoem
+    let lang: String
+}
+
+struct PalemokyDirectPoemResponse: Decodable {
+    let data: PalemokyPoem
+    let lang: String
+}
+
+struct PalemokyPoem: Decodable {
+    let id: Int
+    let title: String
+    let content: [String]
+    let author: PalemokyPoemNamedValue
+    let dynasty: PalemokyPoemNamedValue
+    let type: PalemokyPoemNamedValue
+}
+
+struct PalemokyPoemNamedValue: Decodable {
+    let id: Int
+    let name: String
 }
 
 struct TimedTextLine {
@@ -374,6 +426,7 @@ enum Command {
     case play(PlayOptions)
     case recite(ReciteOptions)
     case poem(PoemOptions)
+    case poetry(PoetryOptions)
     case daemon
 }
 
@@ -1393,6 +1446,7 @@ func printUsage() {
       osd-notify play file.lrc|file.srt|video.mkv [...] [--source name] [--url https://...] [--speed rate] [--limit count] [--stream index ...] [--list-subtitles] [--no-cache|--refresh-cache|--warm-cache] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify recite [text|file.txt ...] [--file path] [--text text] [--stdin] [--source name] [--url https://...] [--interval seconds] [--delimiters chars] [--min-chars count] [--max-chars count] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify poem [random|title] [--refresh] [--source name] [--url https://...] [--interval seconds] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
+      osd-notify poetry [random] [--lang zh-Hans] [--source name] [--url https://...] [--interval seconds] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify clear [--source name] [--all]
 
     示例:
@@ -1415,6 +1469,7 @@ func printUsage() {
       osd-notify poem random
       osd-notify poem 劝学 --interval 15
       osd-notify poem 劝学 --refresh --dry-run --limit 5
+      osd-notify poetry random --dry-run
       osd-notify clear
       osd-notify clear --source codex
       osd-notify clear --all
@@ -1431,6 +1486,7 @@ func printUsage() {
       视频文件会先用 ffprobe 探测文本字幕流；多字幕流时会列出编号，直接输入 1,3 或 1 3 回车即可；空回车才尝试打开 gum TUI。视频字幕默认边抽边播，并缓存到 ~/Library/Caches/osd-notify/subtitles/。
       recite 读取普通文本，默认按中文/英文逗号、句号、问号、叹号和分号初拆，再均衡组合成 7-20 字左右的字幕句；--delimiters 可自定义切分字符。
       poem 首次运行会从古文岛高中文言入口采集原文并缓存到 ~/Library/Caches/osd-notify/poems/；默认随机，传标题时做近似匹配；默认每 15 秒显示一句；会自动把原文来源 URL 放到链接图标。
+      poetry 会从 Palemoky 在线 API 随机取诗词，标题作为 OSD 标题，content 数组每个元素作为一行；如果 API 返回 Cloudflare challenge，会明确报错。
       glass 默认可拖动；soft 默认鼠标穿透。
     """
     print(usage)
@@ -1466,6 +1522,11 @@ func parseCommand() throws -> Command {
     if args.first == "poem" {
         args.removeFirst()
         return .poem(try parsePoemOptions(args))
+    }
+
+    if args.first == "poetry" {
+        args.removeFirst()
+        return .poetry(try parsePoetryOptions(args))
     }
 
     if args.first == "show" {
@@ -1990,6 +2051,153 @@ func parsePoemOptions(_ args: [String]) throws -> PoemOptions {
     let query = titleParts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     if !query.isEmpty, query.lowercased() != "random" {
         options.query = query
+    }
+
+    if !opacityWasSet {
+        options.displayOptions.opacity = OverlayStyle.lyric.defaultOpacity
+    }
+    if !passThroughWasSet {
+        options.displayOptions.passThrough = OverlayStyle.lyric.defaultPassThrough
+    }
+
+    return options
+}
+
+func parsePoetryOptions(_ args: [String]) throws -> PoetryOptions {
+    var options = PoetryOptions()
+    var opacityWasSet = false
+    var passThroughWasSet = false
+    var modeWasSet = false
+    var index = 0
+
+    while index < args.count {
+        let arg = args[index]
+
+        switch arg {
+        case "random":
+            guard !modeWasSet else {
+                throw CLIError.message("poetry only supports one mode.")
+            }
+            options.mode = .random
+            modeWasSet = true
+
+        case "--lang":
+            index += 1
+            guard index < args.count, !args[index].hasPrefix("--") else {
+                throw CLIError.message("--lang expects a language code such as zh-Hans.")
+            }
+            options.lang = args[index]
+
+        case "--source":
+            index += 1
+            guard index < args.count, !args[index].hasPrefix("--") else {
+                throw CLIError.message("--source expects a source name.")
+            }
+            options.source = args[index]
+
+        case "--url", "--link":
+            index += 1
+            guard index < args.count, let linkURL = parseDisplayLinkURL(args[index]) else {
+                throw CLIError.message("\(arg) expects an http or https URL.")
+            }
+            options.displayOptions.linkURL = linkURL
+
+        case "--interval", "--line-interval":
+            index += 1
+            guard index < args.count,
+                  let interval = TimeInterval(args[index]),
+                  interval > 0 else {
+                throw CLIError.message("\(arg) expects a positive number of seconds.")
+            }
+            options.interval = interval
+
+        case "--speed":
+            index += 1
+            guard index < args.count,
+                  let speed = Double(args[index]),
+                  speed > 0 else {
+                throw CLIError.message("--speed expects a positive playback rate.")
+            }
+            options.speed = speed
+
+        case "--limit":
+            index += 1
+            guard index < args.count,
+                  let limit = Int(args[index]),
+                  limit > 0 else {
+                throw CLIError.message("--limit expects a positive integer.")
+            }
+            options.limit = limit
+
+        case "--dry-run", "--preview":
+            options.dryRun = true
+
+        case "--no-clear":
+            options.clearWhenFinished = false
+
+        case "--position":
+            index += 1
+            guard index < args.count, let position = NoticePosition(rawValue: args[index]) else {
+                throw CLIError.message("--position expects one of: top, center, bottom.")
+            }
+            options.displayOptions.position = position
+
+        case "--font", "--font-family":
+            index += 1
+            guard index < args.count, !args[index].hasPrefix("--") else {
+                throw CLIError.message("\(arg) expects a font family name.")
+            }
+            options.displayOptions.fontFamily = args[index]
+
+        case "--font-size", "--message-size":
+            index += 1
+            guard index < args.count, let size = Double(args[index]), size > 0 else {
+                throw CLIError.message("\(arg) expects a positive point size.")
+            }
+            options.displayOptions.messageSize = CGFloat(size)
+
+        case "--title-size":
+            index += 1
+            guard index < args.count, let size = Double(args[index]), size > 0 else {
+                throw CLIError.message("--title-size expects a positive point size.")
+            }
+            options.displayOptions.titleSize = CGFloat(size)
+
+        case "--opacity", "--background-opacity":
+            index += 1
+            guard index < args.count, let opacity = parseOpacity(args[index]) else {
+                throw CLIError.message("\(arg) expects 0...1 or a percentage like 65%.")
+            }
+            options.displayOptions.opacity = opacity
+            opacityWasSet = true
+
+        case "--window-opacity":
+            index += 1
+            guard index < args.count, let opacity = parseOpacity(args[index]) else {
+                throw CLIError.message("--window-opacity expects 0...1 or a percentage like 65%.")
+            }
+            options.displayOptions.windowOpacity = opacity
+
+        case "--blocks-clicks":
+            options.displayOptions.passThrough = false
+            passThroughWasSet = true
+
+        case "--click-through":
+            options.displayOptions.passThrough = true
+            passThroughWasSet = true
+
+        case "--help", "-h":
+            printUsage()
+            exit(0)
+
+        default:
+            if arg.hasPrefix("--") {
+                throw CLIError.message("Unknown poetry option: \(arg)")
+            }
+            throw CLIError.message("Unknown poetry mode: \(arg). Only random is supported.")
+        }
+
+        index += 1
     }
 
     if !opacityWasSet {
@@ -4010,6 +4218,204 @@ func poemDisplayTitle(_ item: GuwendaoPoemItem) -> String {
     return "\(item.author)《\(item.title)》"
 }
 
+func palemokyRandomPoemURL(lang: String) throws -> URL {
+    var components = URLComponents(url: palemokyPoetryBaseURL.appendingPathComponent("/api/poems/random"), resolvingAgainstBaseURL: false)
+    components?.queryItems = [
+        URLQueryItem(name: "lang", value: lang)
+    ]
+    guard let url = components?.url else {
+        throw CLIError.message("无法构造 Palemoky 随机诗词 API URL。")
+    }
+    return url
+}
+
+func decodePalemokyRandomPoemResponse(_ data: Data) throws -> PalemokyRandomPoemResponse {
+    let body = String(decoding: data.prefix(512), as: UTF8.self)
+    guard body.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{") else {
+        if body.localizedCaseInsensitiveContains("Just a moment")
+            || body.localizedCaseInsensitiveContains("Cloudflare")
+            || body.localizedCaseInsensitiveContains("challenge") {
+            throw CLIError.message("Palemoky API 返回 Cloudflare challenge，不是 JSON。请稍后重试，或先在浏览器访问 poetry.palemoky.com 完成验证。")
+        }
+        throw CLIError.message("Palemoky API 返回的不是 JSON。")
+    }
+
+    let response: PalemokyRandomPoemResponse
+    let decoder = JSONDecoder()
+    do {
+        response = try decoder.decode(PalemokyRandomPoemResponse.self, from: data)
+    } catch {
+        do {
+            let direct = try decoder.decode(PalemokyDirectPoemResponse.self, from: data)
+            response = PalemokyRandomPoemResponse(
+                ok: true,
+                status: 200,
+                url: "",
+                data: PalemokyRandomPoemPayload(data: direct.data, lang: direct.lang)
+            )
+        } catch {
+            throw CLIError.message("Palemoky API 返回 JSON 结构不符合预期：\(palemokyResponsePreview(body))")
+        }
+    }
+    guard response.ok, response.status == 200 else {
+        throw CLIError.message("Palemoky API 返回失败状态：ok=\(response.ok), status=\(response.status)。")
+    }
+    guard !response.poem.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          !response.poem.content.isEmpty else {
+        throw CLIError.message("Palemoky API 返回的诗词内容为空。")
+    }
+    return response
+}
+
+func palemokyResponsePreview(_ body: String) -> String {
+    let collapsed = body
+        .replacingOccurrences(of: "\r", with: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+        .replacingOccurrences(of: "\t", with: " ")
+        .split(separator: " ")
+        .joined(separator: " ")
+    if collapsed.count <= 160 {
+        return collapsed
+    }
+    let index = collapsed.index(collapsed.startIndex, offsetBy: 160)
+    return "\(collapsed[..<index])..."
+}
+
+func fetchPalemokyRandomPoem(lang: String) throws -> PalemokyRandomPoemResponse {
+    let url = try palemokyRandomPoemURL(lang: lang)
+    let result = try fetchHTTPData(from: url, accept: "application/json")
+    guard result.statusCode == 200 else {
+        if result.statusCode == 403,
+           let body = String(data: result.data, encoding: .utf8),
+           body.localizedCaseInsensitiveContains("challenge") {
+            throw CLIError.message("Palemoky API 当前返回 403 Cloudflare challenge，CLI 无法直接取得 JSON。")
+        }
+        throw CLIError.message("Palemoky API HTTP \(result.statusCode)。")
+    }
+    let response = try decodePalemokyRandomPoemResponse(result.data)
+    guard response.url.isEmpty else {
+        return response
+    }
+    return PalemokyRandomPoemResponse(
+        ok: response.ok,
+        status: response.status,
+        url: url.absoluteString,
+        data: response.data
+    )
+}
+
+struct HTTPDataResult {
+    let statusCode: Int
+    let data: Data
+}
+
+final class HTTPDataResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data: Data?
+    private var response: URLResponse?
+    private var error: Error?
+
+    func set(data: Data?, response: URLResponse?, error: Error?) {
+        lock.lock()
+        self.data = data
+        self.response = response
+        self.error = error
+        lock.unlock()
+    }
+
+    func get() -> (data: Data?, response: URLResponse?, error: Error?) {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return (data, response, error)
+    }
+}
+
+func fetchHTTPData(from url: URL, accept: String) throws -> HTTPDataResult {
+    var request = URLRequest(url: url)
+    request.setValue(accept, forHTTPHeaderField: "Accept")
+    request.setValue("osd-notify/1.0", forHTTPHeaderField: "User-Agent")
+    request.timeoutInterval = 20.0
+
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = HTTPDataResultBox()
+
+    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+        box.set(data: data, response: response, error: error)
+        semaphore.signal()
+    }
+    task.resume()
+    semaphore.wait()
+
+    let result = box.get()
+    let dataResult = result.data
+    let responseResult = result.response
+    let errorResult = result.error
+    if let errorResult {
+        throw errorResult
+    }
+    guard let dataResult,
+          let httpResponse = responseResult as? HTTPURLResponse else {
+        throw CLIError.message("没有收到 HTTP 响应：\(url.absoluteString)")
+    }
+    return HTTPDataResult(statusCode: httpResponse.statusCode, data: dataResult)
+}
+
+func timedTextLines(for poem: PalemokyPoem, interval: TimeInterval, limit: Int?) -> [TimedTextLine] {
+    var content = poem.content
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    if let limit {
+        content = Array(content.prefix(limit))
+    }
+    return content.enumerated().map { index, line in
+        let start = TimeInterval(index) * interval
+        return TimedTextLine(start: start, end: start + interval, text: line)
+    }
+}
+
+func recitePoetry(_ options: PoetryOptions) throws {
+    let response = try fetchPalemokyRandomPoem(lang: options.lang)
+    let poem = response.poem
+    let lines = timedTextLines(for: poem, interval: options.interval, limit: options.limit)
+    guard !lines.isEmpty else {
+        throw CLIError.message("Palemoky API 返回的诗词没有可播放行。")
+    }
+
+    if options.dryRun {
+        print("选中：\(poem.title)")
+        print("作者：\(poem.author.name)  朝代：\(poem.dynasty.name)  体裁：\(poem.type.name)")
+        print("URL：\(response.url)")
+        print("按 content 数组得到 \(lines.count) 行，interval=\(formatSeconds(options.interval)) 秒，title='\(poem.title)'：")
+        for line in lines {
+            print("[\(formatTimedTextTimestamp(line.start))] \(line.text)")
+        }
+        return
+    }
+
+    var displayOptions = options.displayOptions
+    if displayOptions.linkURL == nil {
+        displayOptions.linkURL = response.url
+    }
+
+    var playbackOptions = PlayOptions()
+    playbackOptions.speed = options.speed
+    playbackOptions.clearWhenFinished = options.clearWhenFinished
+    playbackOptions.displayOptions = displayOptions
+
+    let source = options.source ?? poem.title
+    let track = SubtitlePlaybackTrack(
+        source: source,
+        title: poem.title,
+        stackIndex: nil,
+        lines: lines
+    )
+
+    print("正在用 lyric 样式按 \(formatSeconds(options.interval)) 秒间隔背诵 \(lines.count) 行：\(poem.title)。")
+    try playSubtitleTracks([track], baseOptions: playbackOptions, stackGroup: nil)
+}
+
 func recitePlainText(_ options: ReciteOptions) throws {
     let inputText = try options.inputs
         .map(readRecitationInput)
@@ -4647,6 +5053,10 @@ struct OsdNotifyApp {
 
             case .poem(let options):
                 try recitePoem(options)
+                return
+
+            case .poetry(let options):
+                try recitePoetry(options)
                 return
             }
         } catch {
