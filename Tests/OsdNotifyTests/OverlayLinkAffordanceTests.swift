@@ -19,6 +19,19 @@ final class OverlayLinkAffordanceTests: XCTestCase {
         XCTAssertEqual(options.linkURL, "https://example.com/item")
     }
 
+    func testShowOptionsUseDoubleDashAsMessageSeparator() throws {
+        let options = try parseOptions(["--source", "example", "--", "-- literal message"])
+
+        XCTAssertEqual(options.source, "example")
+        XCTAssertEqual(options.message, "-- literal message")
+    }
+
+    func testShowOptionsRejectUnknownLongOption() {
+        XCTAssertThrowsError(try parseOptions(["message", "--levle", "done"])) { error in
+            XCTAssertEqual(String(describing: error), "Unknown show option: --levle")
+        }
+    }
+
     func testReciteOptionsAcceptURLAsDisplayOption() throws {
         let options = try parseReciteOptions(["--text", "君子曰：学不可以已。", "--url", "https://example.com/poem"])
 

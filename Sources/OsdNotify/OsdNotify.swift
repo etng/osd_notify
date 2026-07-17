@@ -423,6 +423,8 @@ final class IncrementalSRTParser {
 enum Command {
     case version
     case checkUpdate
+    case status
+    case logs
     case show(Options)
     case clear(ClearOptions)
     case play(PlayOptions)
@@ -436,6 +438,7 @@ struct DaemonRequest: Codable {
     enum Kind: String, Codable {
         case show
         case clear
+        case ping
     }
 
     let kind: Kind
@@ -448,6 +451,10 @@ struct DaemonRequest: Codable {
 
     static func clear(_ options: ClearOptions) -> DaemonRequest {
         DaemonRequest(kind: .clear, showOptions: nil, clearOptions: options)
+    }
+
+    static func ping() -> DaemonRequest {
+        DaemonRequest(kind: .ping, showOptions: nil, clearOptions: nil)
     }
 }
 
@@ -496,6 +503,7 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
         do {
             try server.start()
         } catch {
+            appendDiagnosticEvent("daemon-start-failed", detail: "server-start")
             fputs("osd-notify daemon: \(error)\n", stderr)
             NSApp.terminate(nil)
         }
@@ -504,7 +512,6 @@ final class DaemonAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         server.stop()
         manager.clearManagedOverlays()
-        try? FileManager.default.removeItem(at: daemonPIDFileURL)
     }
 }
 
@@ -530,6 +537,9 @@ final class OverlayManager {
                 return DaemonResponse(ok: true, message: options.all ? "Cleared all OSD sources." : "Cleared OSD source '\(options.source)'.")
             }
             return DaemonResponse(ok: true, message: options.all ? "No active OSD processes found." : "No active OSD process found for source '\(options.source)'.")
+
+        case .ping:
+            return DaemonResponse(ok: true, message: "ok")
         }
     }
 
@@ -1360,8 +1370,6 @@ final class DaemonServer: @unchecked Sendable {
 
     func start() throws {
         ensureStateDirectory()
-        terminateRecordedDaemonForRestart()
-        try? FileManager.default.removeItem(at: daemonSocketURL)
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
@@ -1384,6 +1392,7 @@ final class DaemonServer: @unchecked Sendable {
         serverFD = fd
         isRunning = true
         try? "\(getpid())\n".write(to: daemonPIDFileURL, atomically: true, encoding: .utf8)
+        appendDiagnosticEvent("daemon-started")
 
         queue.async { [weak self] in
             self?.acceptLoop()
@@ -1392,11 +1401,16 @@ final class DaemonServer: @unchecked Sendable {
 
     func stop() {
         isRunning = false
+        let ownsState = daemonPIDFileBelongsToCurrentProcess()
         if serverFD >= 0 {
             close(serverFD)
             serverFD = -1
         }
-        try? FileManager.default.removeItem(at: daemonSocketURL)
+        if ownsState {
+            try? FileManager.default.removeItem(at: daemonSocketURL)
+        }
+        removeDaemonPIDFileIfOwned()
+        appendDiagnosticEvent("daemon-stopped")
     }
 
     private func acceptLoop() {
@@ -1446,6 +1460,8 @@ func printUsage() {
     用法:
       osd-notify --version
       osd-notify check-update
+      osd-notify status
+      osd-notify logs
       osd-notify show [message] [--source name] [--url https://...] [--ttl seconds] [--level info|warn|busy|done] [--position top|center|bottom] [--style soft|glass|lyric] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify play file.lrc|file.srt|video.mkv [...] [--source name] [--url https://...] [--speed rate] [--limit count] [--stream index ...] [--list-subtitles] [--no-cache|--refresh-cache|--warm-cache] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify recite [text|file.txt ...] [--file path] [--text text] [--stdin] [--source name] [--url https://...] [--interval seconds] [--delimiters chars] [--min-chars count] [--max-chars count] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
@@ -1511,6 +1527,20 @@ func parseCommand() throws -> Command {
             throw CLIError.message("check-update 不接受其它参数。")
         }
         return .checkUpdate
+    }
+
+    if args.first == "status" {
+        guard args.count == 1 else {
+            throw CLIError.message("status 不接受其它参数。")
+        }
+        return .status
+    }
+
+    if args.first == "logs" {
+        guard args.count == 1 else {
+            throw CLIError.message("logs 不接受其它参数。")
+        }
+        return .logs
     }
 
     if args.first == "help" || args.first == "--help" || args.first == "-h" {
@@ -2247,6 +2277,11 @@ func parseOptions(_ args: [String]) throws -> Options {
     while index < args.count {
         let arg = args[index]
 
+        if arg == "--" {
+            messageParts.append(contentsOf: args.dropFirst(index + 1))
+            break
+        }
+
         switch arg {
         case "--source":
             index += 1
@@ -2346,6 +2381,9 @@ func parseOptions(_ args: [String]) throws -> Options {
             exit(0)
 
         default:
+            if arg.hasPrefix("--") {
+                throw CLIError.message("Unknown show option: \(arg)")
+            }
             messageParts.append(arg)
         }
 
@@ -2404,11 +2442,19 @@ func parseDisplayLinkURL(_ rawValue: String) -> String? {
     return trimmed
 }
 
-let stateDirectoryURL = FileManager.default.temporaryDirectory.appendingPathComponent("osd-notify", isDirectory: true)
+let stateDirectoryURL: URL = {
+    if let override = ProcessInfo.processInfo.environment["OSD_NOTIFY_STATE_DIRECTORY"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+       !override.isEmpty {
+        return URL(fileURLWithPath: override, isDirectory: true).standardizedFileURL
+    }
+    return FileManager.default.temporaryDirectory.appendingPathComponent("osd-notify", isDirectory: true)
+}()
 let placementDirectoryURL = stateDirectoryURL.appendingPathComponent("placements", isDirectory: true)
 let legacyPIDFileURL = FileManager.default.temporaryDirectory.appendingPathComponent("osd-notify.pid")
 let daemonSocketURL = stateDirectoryURL.appendingPathComponent("daemon.sock")
 let daemonPIDFileURL = stateDirectoryURL.appendingPathComponent("daemon.pid")
+let daemonRestartLockFileURL = stateDirectoryURL.appendingPathComponent("daemon.restart.lock")
 let stackSpacing: CGFloat = 12.0
 let socketRetryDelay: TimeInterval = 0.05
 let overlayFadeInDuration: TimeInterval = 0.16
@@ -2426,6 +2472,20 @@ let textConvertibleSubtitleCodecs: Set<String> = [
     "text",
     "webvtt"
 ]
+
+func daemonPIDFileBelongsToCurrentProcess() -> Bool {
+    guard let pidText = try? String(contentsOf: daemonPIDFileURL, encoding: .utf8) else {
+        return false
+    }
+    return Int32(pidText.trimmingCharacters(in: .whitespacesAndNewlines)) == getpid()
+}
+
+func removeDaemonPIDFileIfOwned() {
+    guard daemonPIDFileBelongsToCurrentProcess() else {
+        return
+    }
+    try? FileManager.default.removeItem(at: daemonPIDFileURL)
+}
 let videoContainerExtensions: Set<String> = [
     "3gp",
     "avi",
@@ -2535,22 +2595,51 @@ func sendDaemonRequest(_ request: DaemonRequest, autostart: Bool) throws -> Daem
         }
     }
 
-    terminateRecordedDaemonForRestart()
-    try? FileManager.default.removeItem(at: daemonSocketURL)
-    try startDaemonProcess()
-
-    let deadline = Date().addingTimeInterval(2.0)
-    var lastError: Error?
-    while Date() < deadline {
+    return try withDaemonRestartLock {
         do {
             return try sendDaemonRequestOnce(request)
         } catch {
-            lastError = error
-            Thread.sleep(forTimeInterval: socketRetryDelay)
+            appendDiagnosticEvent("daemon-restart-confirmed")
         }
+
+        terminateRecordedDaemonForRestart()
+        try? FileManager.default.removeItem(at: daemonSocketURL)
+        try startDaemonProcess()
+
+        let deadline = Date().addingTimeInterval(2.0)
+        var lastError: Error?
+        while Date() < deadline {
+            do {
+                return try sendDaemonRequestOnce(request)
+            } catch {
+                lastError = error
+                Thread.sleep(forTimeInterval: socketRetryDelay)
+            }
+        }
+
+        throw lastError ?? CLIError.message("Timed out waiting for osd-notify daemon.")
+    }
+}
+
+func withDaemonRestartLock<T>(_ operation: () throws -> T) throws -> T {
+    ensureStateDirectory()
+    let descriptor = open(
+        daemonRestartLockFileURL.path,
+        O_RDWR | O_CREAT,
+        S_IRUSR | S_IWUSR
+    )
+    guard descriptor >= 0 else {
+        throw CLIError.message("Failed to open daemon restart lock: errno \(errno).")
+    }
+    defer {
+        _ = flock(descriptor, LOCK_UN)
+        close(descriptor)
     }
 
-    throw lastError ?? CLIError.message("Timed out waiting for osd-notify daemon.")
+    guard flock(descriptor, LOCK_EX) == 0 else {
+        throw CLIError.message("Failed to lock daemon restart: errno \(errno).")
+    }
+    return try operation()
 }
 
 func sendDaemonRequestOnce(_ request: DaemonRequest) throws -> DaemonResponse {
@@ -2590,6 +2679,7 @@ func startDaemonProcess() throws {
     process.standardError = nullOutput
 
     try process.run()
+    appendDiagnosticEvent("daemon-spawned", detail: "pid=\(process.processIdentifier)")
 }
 
 func terminateRecordedDaemonForRestart() {
@@ -2603,6 +2693,7 @@ func terminateRecordedDaemonForRestart() {
     }
 
     _ = kill(pid_t(pid), SIGTERM)
+    appendDiagnosticEvent("daemon-restart-requested", detail: "pid=\(pid)")
     let deadline = Date().addingTimeInterval(1.0)
     while Date() < deadline {
         if !isProcessAlive(pid_t(pid)) {
@@ -5028,6 +5119,11 @@ func mergeTimedTextLines(_ lines: [TimedTextLine]) -> [TimedTextLine] {
 struct OsdNotifyApp {
     @MainActor
     static func main() {
+        appendDiagnosticEvent(
+            "invocation",
+            arguments: Array(CommandLine.arguments.dropFirst())
+        )
+
         do {
             let command = try parseCommand()
 
@@ -5040,11 +5136,24 @@ struct OsdNotifyApp {
                 try checkForUpdates()
                 return
 
+            case .status:
+                printRuntimeStatus()
+                return
+
+            case .logs:
+                printRecentDiagnosticEvents()
+                return
+
             case .daemon:
                 runDaemon()
                 return
 
             case .clear(let options):
+                appendDiagnosticEvent(
+                    "clear",
+                    source: options.source,
+                    detail: options.all ? "all" : "source"
+                )
                 do {
                     let response = try sendDaemonRequest(.clear(options), autostart: false)
                     if !response.message.isEmpty {
@@ -5063,6 +5172,11 @@ struct OsdNotifyApp {
                 return
 
             case .show(let options):
+                appendDiagnosticEvent(
+                    "show",
+                    source: options.source,
+                    message: options.message
+                )
                 let response = try sendDaemonRequest(.show(options), autostart: true)
                 if !response.ok {
                     throw CLIError.message(response.message)
@@ -5086,6 +5200,7 @@ struct OsdNotifyApp {
                 return
             }
         } catch {
+            appendDiagnosticEvent("command-failed", detail: "exit=2")
             fputs("osd-notify: \(error)\n\n", stderr)
             printUsage()
             exit(2)
@@ -5096,9 +5211,20 @@ struct OsdNotifyApp {
     private static func runDaemon() {
         let app = NSApplication.shared
         let delegate = DaemonAppDelegate()
+        Darwin.signal(SIGTERM, SIG_IGN)
+        Darwin.signal(SIGINT, SIG_IGN)
+        let terminationSignals = [SIGTERM, SIGINT].map { signalNumber in
+            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+            source.setEventHandler {
+                NSApp.terminate(nil)
+            }
+            source.resume()
+            return source
+        }
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
+        terminationSignals.forEach { $0.cancel() }
         _ = delegate
     }
 }
