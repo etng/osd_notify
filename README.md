@@ -10,7 +10,22 @@
 
 ## 安装
 
-下载最新版通用二进制：
+推荐使用 Homebrew 安装。先确认 GitHub CLI 已登录并有权访问私有 Release：
+
+```bash
+gh auth status
+brew install etng/tap/osd-notify
+```
+
+Homebrew 会随 `brew update` 获取新 Formula；检查并安装更新：
+
+```bash
+brew update
+brew outdated osd-notify
+brew upgrade osd-notify
+```
+
+也可以直接下载最新版通用二进制：
 
 ```bash
 gh release download \

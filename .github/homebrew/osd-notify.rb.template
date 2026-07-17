@@ -1,0 +1,27 @@
+# frozen_string_literal: true
+
+require_relative "../lib/private_github_release_download_strategy"
+
+# Installs the prebuilt universal osd-notify command-line tool.
+class OsdNotify < Formula
+  desc "Show clear, source-aware notifications on every macOS display"
+  homepage "https://github.com/etng/osd_notify"
+  url "https://api.github.com/repos/etng/osd_notify/releases/assets/__ASSET_ID__",
+      using: PrivateGitHubReleaseDownloadStrategy
+  version "__VERSION__"
+  sha256 "__SHA256__"
+
+  livecheck do
+    skip "Updated automatically by the osd-notify release workflow."
+  end
+
+  depends_on macos: :ventura
+
+  def install
+    bin.install "osd-notify"
+  end
+
+  test do
+    assert_match "osd-notify #{version}", shell_output("#{bin}/osd-notify --version")
+  end
+end

@@ -12,7 +12,7 @@ jobs:
   release:
     name: Build universal macOS release
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Check out tagged source
@@ -82,11 +82,79 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" \
-            dist/osd-notify-macos-universal \
-            "dist/osd-notify-${RELEASE_TAG}-macos-universal.tar.gz" \
-            dist/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "osd-notify ${RELEASE_TAG}" \
-            --notes-file ".github/release-notes/${RELEASE_TAG}.md"
+          release_assets=(
+            dist/osd-notify-macos-universal
+            "dist/osd-notify-${RELEASE_TAG}-macos-universal.tar.gz"
+            dist/SHA256SUMS
+          )
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              "${release_assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "osd-notify ${RELEASE_TAG}" \
+              --notes-file ".github/release-notes/${RELEASE_TAG}.md"
+          else
+            gh release create "$RELEASE_TAG" \
+              "${release_assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "osd-notify ${RELEASE_TAG}" \
+              --notes-file ".github/release-notes/${RELEASE_TAG}.md"
+          fi
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_DEPLOY_KEY" ]; then
+            printf 'Missing HOMEBREW_TAP_DEPLOY_KEY repository secret.\n' >&2
+            exit 1
+          fi
+
+          archive_name="osd-notify-${RELEASE_TAG}-macos-universal.tar.gz"
+          asset_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            --jq ".assets[] | select(.name == \"${archive_name}\") | .id")"
+          archive_sha="$(awk -v archive_name="$archive_name" '$2 == archive_name { print $1 }' dist/SHA256SUMS)"
+          version_value="${RELEASE_TAG#v}"
+
+          if [ -z "$asset_id" ] || [ -z "$archive_sha" ]; then
+            printf 'Unable to resolve Homebrew asset metadata.\n' >&2
+            exit 1
+          fi
+
+          ssh_dir="$RUNNER_TEMP/osd-notify-ssh"
+          tap_dir="$RUNNER_TEMP/homebrew-tap"
+          install -d -m 0700 "$ssh_dir"
+          printf '%s\n' "$HOMEBREW_TAP_DEPLOY_KEY" > "$ssh_dir/id_ed25519"
+          chmod 0600 "$ssh_dir/id_ed25519"
+          gh api meta --jq '.ssh_keys[] | "github.com \(.)"' > "$ssh_dir/known_hosts"
+          chmod 0600 "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
+
+          git clone git@github.com:etng/homebrew-tap.git "$tap_dir"
+          sed \
+            -e "s/__VERSION__/${version_value}/g" \
+            -e "s/__ASSET_ID__/${asset_id}/g" \
+            -e "s/__SHA256__/${archive_sha}/g" \
+            .github/homebrew/osd-notify.rb.template \
+            > "$tap_dir/Formula/osd-notify.rb"
+
+          ruby -c "$tap_dir/Formula/osd-notify.rb"
+          git -C "$tap_dir" config user.name "github-actions[bot]"
+          git -C "$tap_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$tap_dir" add Formula/osd-notify.rb
+          git -C "$tap_dir" diff --cached --check
+
+          if git -C "$tap_dir" diff --cached --quiet; then
+            printf 'Homebrew formula is already up to date.\n'
+          else
+            git -C "$tap_dir" commit -m "chore(osd-notify): 🔧 update formula to ${RELEASE_TAG}"
+            git -C "$tap_dir" push origin main
+          fi
