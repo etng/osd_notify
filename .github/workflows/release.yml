@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build universal macOS release
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release version and notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version_value="$(sed -n 's/.*currentString = "\([^"]*\)".*/\1/p' Sources/OsdNotify/Version.swift)"
+          if [ "v${version_value}" != "$RELEASE_TAG" ]; then
+            printf 'Version.swift contains %s but tag is %s\n' "$version_value" "$RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          notes_file=".github/release-notes/${RELEASE_TAG}.md"
+          if [ ! -f "$notes_file" ]; then
+            printf 'Missing user-facing release notes: %s\n' "$notes_file" >&2
+            exit 1
+          fi
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build both macOS architectures
+        run: |
+          swift build \
+            --scratch-path .build/release-arm64 \
+            -c release \
+            --triple arm64-apple-macosx13.0
+          swift build \
+            --scratch-path .build/release-x86_64 \
+            -c release \
+            --triple x86_64-apple-macosx13.0
+
+      - name: Package universal binary
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist package
+          lipo -create \
+            .build/release-arm64/arm64-apple-macosx/release/osd-notify \
+            .build/release-x86_64/x86_64-apple-macosx/release/osd-notify \
+            -output dist/osd-notify-macos-universal
+          codesign --force --sign - dist/osd-notify-macos-universal
+          chmod +x dist/osd-notify-macos-universal
+
+          cp dist/osd-notify-macos-universal package/osd-notify
+          tar -czf "dist/osd-notify-${RELEASE_TAG}-macos-universal.tar.gz" -C package osd-notify
+
+          cd dist
+          shasum -a 256 \
+            osd-notify-macos-universal \
+            "osd-notify-${RELEASE_TAG}-macos-universal.tar.gz" \
+            > SHA256SUMS
+
+      - name: Verify packaged binary
+        run: |
+          file dist/osd-notify-macos-universal | grep -q 'universal binary'
+          dist/osd-notify-macos-universal --version
+          codesign --verify --verbose=2 dist/osd-notify-macos-universal
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            dist/osd-notify-macos-universal \
+            "dist/osd-notify-${RELEASE_TAG}-macos-universal.tar.gz" \
+            dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "osd-notify ${RELEASE_TAG}" \
+            --notes-file ".github/release-notes/${RELEASE_TAG}.md"

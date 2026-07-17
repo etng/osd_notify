@@ -6,6 +6,21 @@
 
 - macOS 13 或更高版本
 - Apple Silicon 或 Intel Mac
+- 从私有仓库下载 Release 时，需要已登录的 [GitHub CLI](https://cli.github.com/)
+
+## 安装
+
+下载最新版通用二进制：
+
+```bash
+gh release download \
+  --repo etng/osd_notify \
+  --pattern osd-notify-macos-universal
+chmod +x osd-notify-macos-universal
+sudo install osd-notify-macos-universal /usr/local/bin/osd-notify
+```
+
+Release 同时提供压缩包和 `SHA256SUMS` 校验文件。
 
 ## 快速开始
 
