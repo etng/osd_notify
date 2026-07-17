@@ -421,6 +421,8 @@ final class IncrementalSRTParser {
 }
 
 enum Command {
+    case version
+    case checkUpdate
     case show(Options)
     case clear(ClearOptions)
     case play(PlayOptions)
@@ -1442,6 +1444,8 @@ final class DaemonServer: @unchecked Sendable {
 func printUsage() {
     let usage = """
     用法:
+      osd-notify --version
+      osd-notify check-update
       osd-notify show [message] [--source name] [--url https://...] [--ttl seconds] [--level info|warn|busy|done] [--position top|center|bottom] [--style soft|glass|lyric] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify play file.lrc|file.srt|video.mkv [...] [--source name] [--url https://...] [--speed rate] [--limit count] [--stream index ...] [--list-subtitles] [--no-cache|--refresh-cache|--warm-cache] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
       osd-notify recite [text|file.txt ...] [--file path] [--text text] [--stdin] [--source name] [--url https://...] [--interval seconds] [--delimiters chars] [--min-chars count] [--max-chars count] [--speed rate] [--limit count] [--dry-run] [--no-clear] [--position top|center|bottom] [--font name] [--font-size points] [--title-size points] [--opacity 0...1] [--window-opacity 0...1] [--click-through|--blocks-clicks]
@@ -1494,6 +1498,20 @@ func printUsage() {
 
 func parseCommand() throws -> Command {
     var args = Array(CommandLine.arguments.dropFirst())
+
+    if args.first == "version" || args.first == "--version" || args.first == "-V" {
+        guard args.count == 1 else {
+            throw CLIError.message("version 不接受其它参数。")
+        }
+        return .version
+    }
+
+    if args.first == "check-update" || args.first == "update-check" {
+        guard args.count == 1 else {
+            throw CLIError.message("check-update 不接受其它参数。")
+        }
+        return .checkUpdate
+    }
 
     if args.first == "help" || args.first == "--help" || args.first == "-h" {
         printUsage()
@@ -5014,6 +5032,14 @@ struct OsdNotifyApp {
             let command = try parseCommand()
 
             switch command {
+            case .version:
+                printVersion()
+                return
+
+            case .checkUpdate:
+                try checkForUpdates()
+                return
+
             case .daemon:
                 runDaemon()
                 return

@@ -9,6 +9,15 @@
 
 ## 快速开始
 
+查看当前版本和检查最新 Release：
+
+```bash
+osd-notify --version
+osd-notify check-update
+```
+
+更新检查通过已登录的 GitHub CLI 访问私有仓库，不会在工具中保存访问令牌。
+
 显示默认提醒：
 
 ```bash
