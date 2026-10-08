@@ -4,10 +4,14 @@ import XCTest
 final class GuidanceTests: XCTestCase {
     func testMissingMessageShowsGuidance() throws {
         let options = try parseOptions([])
-        XCTAssertEqual(options.titleOverride, "osd-notify 使用引导")
+        XCTAssertEqual(options.titleOverride, "欢迎使用OSD Notify")
         XCTAssertTrue(options.message.contains("osd-notify show"))
         XCTAssertTrue(options.message.contains("osd-notify --help"))
-        XCTAssertEqual(options.message.split(separator: "\n").count, 4)
+        XCTAssertTrue(options.message.contains("--ttl 10"))
+        XCTAssertTrue(options.message.contains("双击标题栏"))
+        XCTAssertTrue(options.message.contains("关闭图标"))
+        XCTAssertTrue(options.message.contains("点击"))
+        XCTAssertTrue(options.message.contains("\n"))
         XCTAssertEqual(options.level, .info)
         XCTAssertEqual(options.ttl, 60)
     }

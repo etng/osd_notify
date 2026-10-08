@@ -28,3 +28,7 @@ install: package
 .PHONY: run
 run: install
 	"$(DESTDIR)$(PREFIX)/bin/osd-notify" show "$(MESSAGE)" --level done --ttl 60
+
+.PHONY: hello
+hello: install
+	"$(DESTDIR)$(PREFIX)/bin/osd-notify"

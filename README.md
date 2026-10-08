@@ -66,19 +66,19 @@ osd-notify check-update
 
 更新检查需要已安装并登录的 [GitHub CLI](https://cli.github.com/)，工具不会保存访问令牌；Homebrew 安装和 Release 下载无需登录。
 
-不传参数运行时，会显示使用引导浮层，包含自定义提醒的示例命令和帮助入口，60 秒后自动消失：
+不传参数运行时，会显示标题为“欢迎使用OSD Notify”的引导浮层，包含调用示例、定时关闭、主动关闭和完整帮助入口，60 秒后自动消失：
 
 ```bash
 osd-notify
 ```
 
-引导正文按四行显示，说明和命令各占一行：
+引导正文按多行显示，说明和命令分行展示：
 
 ```text
-显示提醒：
-osd-notify show "提示内容"
-查看用法：
-osd-notify --help
+显示提示：osd-notify show "提示内容"
+定时关闭（10 秒后）：osd-notify show "提示内容" --ttl 10
+查看完整帮助：osd-notify --help
+主动关闭：双击标题栏会显示关闭图标,点击即可关闭
 ```
 
 `show` 未提供正文时也会显示使用引导；可显式调整显示时长和等级：
