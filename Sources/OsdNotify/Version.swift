@@ -103,7 +103,7 @@ struct SemanticVersion: Comparable, CustomStringConvertible, Equatable {
 }
 
 enum AppVersion {
-    static let currentString = "1.0.0"
+    static let currentString = "1.0.1"
     static let current = SemanticVersion(currentString)!
     static let repository = "etng/osd_notify"
 }

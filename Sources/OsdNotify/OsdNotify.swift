@@ -92,7 +92,7 @@ enum OverlayStyle: String, Codable {
 }
 
 struct Options: Codable {
-    var message: String = "请暂停手动操作，Codex 正在控制 Chrome"
+    var message: String = "显示提醒：\nosd-notify show \"提示内容\"\n查看用法：\nosd-notify --help"
     var source: String = inferredSourceName()
     var sourceWasProvidedByCaller: Bool = sourceWasConfiguredByEnvironment()
     var parentApplicationName: String? = parentApplicationDisplayName()
@@ -1495,7 +1495,7 @@ func printUsage() {
       osd-notify clear --all
 
     说明:
-      show 默认消息: 请暂停手动操作，Codex 正在控制 Chrome
+      show 未提供正文时显示使用引导，默认 info 等级、60 秒后消失。
       默认样式: glass、bottom、PingFang SC、36pt 主文字、42% 背景透明度、3600 秒 TTL。
       OSD 会同时显示在所有已连接显示器上。
       传入 --url 后，OSD 右下角会显示链接图标，点击会用默认浏览器打开该地址。
@@ -1514,6 +1514,13 @@ func printUsage() {
 
 func parseCommand() throws -> Command {
     var args = Array(CommandLine.arguments.dropFirst())
+
+    if args.isEmpty {
+        var options = try parseOptions([])
+        options.source = "osd-notify"
+        options.sourceWasProvidedByCaller = true
+        return .show(options)
+    }
 
     if args.first == "version" || args.first == "--version" || args.first == "-V" {
         guard args.count == 1 else {
@@ -2271,6 +2278,8 @@ func parseOptions(_ args: [String]) throws -> Options {
     var options = Options()
     var opacityWasSet = false
     var passThroughWasSet = false
+    var ttlWasSet = false
+    var levelWasSet = false
     var messageParts: [String] = []
     var index = 0
 
@@ -2304,6 +2313,7 @@ func parseOptions(_ args: [String]) throws -> Options {
                 throw CLIError.message("--ttl expects a positive number of seconds.")
             }
             options.ttl = ttl
+            ttlWasSet = true
 
         case "--level":
             index += 1
@@ -2311,6 +2321,7 @@ func parseOptions(_ args: [String]) throws -> Options {
                 throw CLIError.message("--level expects one of: info, warn, busy, done.")
             }
             options.level = level
+            levelWasSet = true
 
         case "--position":
             index += 1
@@ -2392,6 +2403,10 @@ func parseOptions(_ args: [String]) throws -> Options {
 
     if !messageParts.isEmpty {
         options.message = messageParts.joined(separator: " ")
+    } else {
+        options.titleOverride = "osd-notify 使用引导"
+        if !ttlWasSet { options.ttl = 60 }
+        if !levelWasSet { options.level = .info }
     }
 
     return options
