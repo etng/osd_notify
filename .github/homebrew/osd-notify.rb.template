@@ -1,13 +1,10 @@
 # frozen_string_literal: true
 
-require_relative "../lib/private_github_release_download_strategy"
-
-# Installs the prebuilt universal osd-notify command-line tool.
+# 由 osd-notify 的 tag 发布流程生成，请修改源模板后重新发布。
 class OsdNotify < Formula
   desc "Show clear, source-aware notifications on every macOS display"
   homepage "https://github.com/etng/osd_notify"
-  url "https://api.github.com/repos/etng/osd_notify/releases/assets/__ASSET_ID__",
-      using: PrivateGitHubReleaseDownloadStrategy
+  url "https://github.com/etng/osd_notify/releases/download/v__VERSION__/osd-notify-v__VERSION__-macos-universal.tar.gz"
   version "__VERSION__"
   sha256 "__SHA256__"
 
@@ -19,6 +16,11 @@ class OsdNotify < Formula
 
   def install
     bin.install "osd-notify"
+  end
+
+  post_install_steps do
+    # 二进制仅做 ad-hoc 签名，未做 Apple 公证；只移除本程序的隔离标记。
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{bin}}/osd-notify"]
   end
 
   test do

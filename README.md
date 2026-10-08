@@ -6,15 +6,13 @@
 
 - macOS 13 或更高版本
 - Apple Silicon 或 Intel Mac
-- 从私有仓库下载 Release 时，需要已登录的 [GitHub CLI](https://cli.github.com/)
 
 ## 安装
 
-推荐使用 Homebrew 安装。先确认 GitHub CLI 已登录并有权访问私有 Release：
+推荐使用 Homebrew 安装，直接下载公开 Release，无需 GitHub 登录：
 
 ```bash
-gh auth status
-brew install etng/tap/osd-notify
+brew install etng/taps/osd-notify
 ```
 
 Homebrew 会随 `brew update` 获取新 Formula；检查并安装更新：
@@ -28,14 +26,34 @@ brew upgrade osd-notify
 也可以直接下载最新版通用二进制：
 
 ```bash
-gh release download \
-  --repo etng/osd_notify \
-  --pattern osd-notify-macos-universal
+curl -fL -o osd-notify-macos-universal \
+  https://github.com/etng/osd_notify/releases/latest/download/osd-notify-macos-universal
 chmod +x osd-notify-macos-universal
 sudo install osd-notify-macos-universal /usr/local/bin/osd-notify
+sudo xattr -dr com.apple.quarantine /usr/local/bin/osd-notify
 ```
 
 Release 同时提供压缩包和 `SHA256SUMS` 校验文件。
+
+二进制使用 ad-hoc 签名，未做 Apple 公证。Homebrew 安装后会自动移除本程序的 quarantine 标记；该步骤也可以通过 `brew postinstall etng/taps/osd-notify` 重新执行。
+
+### 从源码一键打包、安装并运行
+
+在仓库根目录执行（需要已安装 Xcode Command Line Tools，包含 Swift）：
+
+```bash
+make
+```
+
+该命令依次完成 Release 构建、生成当前 Mac 架构的压缩包和 SHA-256 校验文件、安装到 `~/.local/bin/osd-notify`，然后显示一次“任务完成”提示，60 秒后自动消失。打包产物位于 `dist/`；这是当前架构的二进制，不是 Release 中的通用二进制。
+
+自定义提示文字：
+
+```bash
+make MESSAGE='打包安装完成'
+```
+
+日常直接输入 `osd-notify` 时，请确保 `~/.local/bin` 已加入 `PATH`，否则可使用 `~/.local/bin/osd-notify` 调用。
 
 ## 快速开始
 
@@ -46,7 +64,7 @@ osd-notify --version
 osd-notify check-update
 ```
 
-更新检查通过已登录的 GitHub CLI 访问私有仓库，不会在工具中保存访问令牌。
+更新检查需要已安装并登录的 [GitHub CLI](https://cli.github.com/)，工具不会保存访问令牌；Homebrew 安装和 Release 下载无需登录。
 
 显示默认提醒：
 

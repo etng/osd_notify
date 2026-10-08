@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build universal macOS release
@@ -27,6 +31,11 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'Expected a stable SemVer tag, got %s\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+
           version_value="$(sed -n 's/.*currentString = "\([^"]*\)".*/\1/p' Sources/OsdNotify/Version.swift)"
           if [ "v${version_value}" != "$RELEASE_TAG" ]; then
             printf 'Version.swift contains %s but tag is %s\n' "$version_value" "$RELEASE_TAG" >&2
@@ -122,12 +131,10 @@ jobs:
           fi
 
           archive_name="osd-notify-${RELEASE_TAG}-macos-universal.tar.gz"
-          asset_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
-            --jq ".assets[] | select(.name == \"${archive_name}\") | .id")"
           archive_sha="$(awk -v archive_name="$archive_name" '$2 == archive_name { print $1 }' dist/SHA256SUMS)"
           version_value="${RELEASE_TAG#v}"
 
-          if [ -z "$asset_id" ] || [ -z "$archive_sha" ]; then
+          if [ -z "$archive_sha" ]; then
             printf 'Unable to resolve Homebrew asset metadata.\n' >&2
             exit 1
           fi
@@ -141,10 +148,12 @@ jobs:
           chmod 0600 "$ssh_dir/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $ssh_dir/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
 
-          git clone git@github.com:etng/homebrew-tap.git "$tap_dir"
+          # 旧仓库 git@github.com:etng/homebrew-tap.git 已停止同步。
+          # 仅在明确回迁且重新配置对应部署密钥后，改回旧地址。
+          git clone git@github.com:etng/homebrew-taps.git "$tap_dir"
+          mkdir -p "$tap_dir/Formula"
           sed \
             -e "s/__VERSION__/${version_value}/g" \
-            -e "s/__ASSET_ID__/${asset_id}/g" \
             -e "s/__SHA256__/${archive_sha}/g" \
             .github/homebrew/osd-notify.rb.template \
             > "$tap_dir/Formula/osd-notify.rb"
